@@ -46,22 +46,92 @@ async function ratiosFromYahoo(sym){
   return kpi;
 }
 
-// Last resort — static NIFTY table + live 52W range from the v8 chart endpoint
-// (v8 chart needs no crumb and works from cloud IPs). Never returns null.
-async function ratiosFromStatic(sym){
-  const bare = sym.replace('.NS','').replace('.BO','').toUpperCase();
-  const fb = FALLBACK[bare] || {};
-  let hi = fb.week52High || '-', lo = fb.week52Low || '-', price = '-';
+// v8 chart endpoint — no crumb, works from cloud/datacenter IPs. Gives live price + 52W range.
+async function fetchChartMeta(bare){
   try{
     const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(bare)}.NS?interval=1d&range=5d`, {
       headers: {'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
       timeout: 8000
     });
     const meta = r.data?.chart?.result?.[0]?.meta;
-    if(meta?.fiftyTwoWeekHigh) hi = meta.fiftyTwoWeekHigh.toLocaleString('en-IN');
-    if(meta?.fiftyTwoWeekLow) lo = meta.fiftyTwoWeekLow.toLocaleString('en-IN');
-    if(meta?.regularMarketPrice) price = meta.regularMarketPrice.toLocaleString('en-IN');
-  }catch{}
+    if(!meta) return {};
+    return { price: meta.regularMarketPrice, high: meta.fiftyTwoWeekHigh, low: meta.fiftyTwoWeekLow };
+  }catch{ return {}; }
+}
+
+const fmtInr = (n) => (n==null || isNaN(n)) ? '-' : n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+function parseShares(v){
+  if(!v) return null;
+  const m = String(v).replace(/,/g,'').match(/^([\d.]+)\s*([BMT])?/i);
+  if(!m) return null;
+  const n = parseFloat(m[1]);
+  const unit = (m[2]||'').toUpperCase();
+  return n * (unit==='T'?1e12:unit==='B'?1e9:unit==='M'?1e6:1);
+}
+
+// StockAnalysis.com (CDN-hosted, reachable from cloud IPs) — rich fundamental ratios
+async function ratiosFromStockAnalysis(sym){
+  const bare = sym.replace('.NS','').replace('.BO','').toUpperCase();
+  let page;
+  try{
+    const r = await axios.get(`https://stockanalysis.com/quote/nse/${encodeURIComponent(bare)}/statistics/`, {
+      headers: {'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+      timeout: 10000
+    });
+    page = String(r.data).replace(/<!--[\s\S]*?-->/g,'');
+  }catch{ return null; }
+  const map = {};
+  const re = /<td[^>]*>\s*<span>([^<]+)<\/span>\s*<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+  let m;
+  while((m = re.exec(page))) map[m[1].trim()] = m[2].trim();
+  if(!map['PE Ratio'] && !map['Book Value Per Share']) return null;
+  const clean = (v) => (!v || /^n\/a$/i.test(v) ? '-' : v);
+  const eps = clean(map['Earnings Per Share (EPS)']);
+  const bvps = clean(map['Book Value Per Share']);
+  let roe = clean(map['Return on Equity (ROE)']);
+  if(roe === '-' && eps !== '-' && bvps !== '-'){
+    const r2 = (parseFloat(eps) / parseFloat(bvps)) * 100;
+    if(isFinite(r2)) roe = `${r2.toFixed(2)} (derived)`;
+  }
+  let roce = clean(map['Return on Capital Employed (ROCE)']);
+  if(roce === '-') roce = clean(map['Return on Invested Capital (ROIC)']);
+
+  const meta = await fetchChartMeta(bare);
+  const shares = parseShares(map['Shares Outstanding']);
+  const marketCap = (shares && meta.price) ? `₹${fmtInr(Math.round(shares * meta.price / 1e7))} Cr` : '-';
+
+  return {
+    pe: clean(map['PE Ratio']),
+    pb: clean(map['PB Ratio']),
+    roe,
+    roce,
+    debtToEquity: clean(map['Debt / Equity']),
+    currentRatio: clean(map['Current Ratio']),
+    interestCoverage: clean(map['Interest Coverage']),
+    peg: clean(map['PEG Ratio']),
+    dividendYield: clean(map['Dividend Yield']),
+    roceLatest: roce,
+    marketCap,
+    bookValue: bvps !== '-' ? `₹${bvps}` : '-',
+    faceValue: '-',
+    week52High: meta.high ? fmtInr(meta.high) : '-',
+    week52Low: meta.low ? fmtInr(meta.low) : '-',
+    debtorDays: '-',
+    inventoryDays: '-',
+    eps,
+    beta: clean(map['Beta (5Y)']),
+    profitMargin: clean(map['Profit Margin']),
+    price: meta.price ? fmtInr(meta.price) : '-',
+    source: 'StockAnalysis'
+  };
+}
+
+// Last resort — static NIFTY table + live 52W range from the v8 chart endpoint
+// (v8 chart needs no crumb and works from cloud IPs). Never returns null.
+async function ratiosFromStatic(sym){
+  const bare = sym.replace('.NS','').replace('.BO','').toUpperCase();
+  const fb = FALLBACK[bare] || {};
+  const meta = await fetchChartMeta(bare);
   return {
     pe: fb.pe || '-', pb: '-', roe: '-', roce: '-',
     debtToEquity: '-', currentRatio: '-', interestCoverage: '-', peg: '-',
@@ -70,9 +140,10 @@ async function ratiosFromStatic(sym){
     marketCap: fb.marketCap || '-',
     bookValue: fb.bookValue || '-',
     faceValue: '-',
-    week52High: hi, week52Low: lo,
+    week52High: meta.high ? fmtInr(meta.high) : (fb.week52High || '-'),
+    week52Low: meta.low ? fmtInr(meta.low) : (fb.week52Low || '-'),
     debtorDays: '-', inventoryDays: '-',
-    price,
+    price: meta.price ? fmtInr(meta.price) : '-',
     source: 'Reference data'
   };
 }
@@ -82,6 +153,15 @@ export async function getRatios(symbol){
   const key = `ratios:${sym}`;
   const cached = cache.get(key);
   if(cached) return cached;
+
+  // Cloud fallbacks: StockAnalysis.com (works from datacenter IPs) -> Yahoo -> static table
+  const fallback = async () => {
+    const sa = await ratiosFromStockAnalysis(sym).catch(()=>null);
+    if(sa) return sa;
+    const y = await ratiosFromYahoo(sym).catch(()=>null);
+    if(y) return y;
+    return await ratiosFromStatic(sym);
+  };
 
   try{
     const r = await axios.get(`https://www.screener.in/company/${sym}/`, {
@@ -164,24 +244,18 @@ export async function getRatios(symbol){
     // If screener returned a block/challenge page, all values are '-' — fall back to Yahoo
     const foundCount = Object.values(ratios).length;
     if(foundCount === 0){
-      console.warn(`ratios screener parsed 0 values for ${sym} (blocked?) -> trying Yahoo`);
-      const y = await ratiosFromYahoo(sym);
-      if(y){ cache.set(key, y); return y; }
-      const s = await ratiosFromStatic(sym);
-      cache.set(key, s);
-      return s;
+      console.warn(`ratios screener parsed 0 values for ${sym} (blocked?) -> fallback chain`);
+      const y = await fallback();
+      cache.set(key, y);
+      return y;
     }
     cache.set(key, kpi);
     return kpi;
   }catch(e){
-    console.warn(`ratios screener fail ${sym}: ${e.message} -> trying Yahoo`);
-    try{
-      const y = await ratiosFromYahoo(sym);
-      if(y){ cache.set(key, y); return y; }
-    }catch(e2){ console.warn(`ratios yahoo fail ${sym}: ${e2.message}`); }
-    const s = await ratiosFromStatic(sym);
-    cache.set(key, s);
-    return s;
+    console.warn(`ratios screener fail ${sym}: ${e.message} -> fallback chain`);
+    const y = await fallback();
+    cache.set(key, y);
+    return y;
   }
 }
 export default { getRatios };

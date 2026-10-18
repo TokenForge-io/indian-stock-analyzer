@@ -214,53 +214,6 @@ router.get('/target/:symbol', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// TEMP diagnostic — probes upstream sources from this server's IP. Remove after use.
-router.get('/_diag/ratios/:symbol', async (req, res) => {
-  const sym = req.params.symbol.toUpperCase().replace('.NS','').replace('.BO','');
-  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-  const axios = (await import('axios')).default;
-  const out = {};
-  const run = async (name, fn) => {
-    const t = Date.now();
-    try { const r = await fn(); out[name] = { ms: Date.now()-t, ...r }; }
-    catch (e) { out[name] = { ms: Date.now()-t, err: e.message, status: e.response?.status }; }
-  };
-  await run('screener', async () => {
-    const r = await axios.get(`https://www.screener.in/company/${sym}/`, { headers:{'User-Agent':UA}, timeout:6000, validateStatus:()=>true });
-    return { status: r.status, len: String(r.data).length, hasTopRatios: String(r.data).includes('top-ratios') };
-  });
-  await run('yahoo_fc', async () => {
-    const r = await axios.get('https://fc.yahoo.com', { headers:{'User-Agent':UA}, timeout:6000, maxRedirects:0, validateStatus:()=>true });
-    return { status: r.status, hasCookie: !!(r.headers?.['set-cookie']?.length) };
-  });
-  await run('yahoo_summary', async () => {
-    const s = await yahooService.getQuoteSummary(sym);
-    return { ok: !!s, keys: s ? Object.keys(s) : [] };
-  });
-  await run('yahoo_v7', async () => {
-    const r = await axios.get(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${sym}.NS`, { headers:{'User-Agent':UA}, timeout:6000, validateStatus:()=>true });
-    return { status: r.status, snippet: JSON.stringify(r.data).slice(0,200) };
-  });
-  await run('yahoo_chart', async () => {
-    const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?interval=1d&range=5d`, { headers:{'User-Agent':UA}, timeout:6000, validateStatus:()=>true });
-    const meta = r.data?.chart?.result?.[0]?.meta;
-    return { status: r.status, hasMeta: !!meta, price: meta?.regularMarketPrice };
-  });
-  await run('google', async () => {
-    const r = await axios.get(`https://www.google.com/finance/quote/${sym}:NSE`, { headers:{'User-Agent':UA}, timeout:6000, validateStatus:()=>true });
-    return { status: r.status, len: String(r.data).length, hasPE: String(r.data).includes('P/E ratio') };
-  });
-  await run('stockanalysis', async () => {
-    const r = await axios.get(`https://stockanalysis.com/quote/nse/${sym}/statistics/`, { headers:{'User-Agent':UA}, timeout:6000, validateStatus:()=>true });
-    return { status: r.status, len: String(r.data).length, hasPE: String(r.data).includes('PE Ratio') };
-  });
-  await run('moneycontrol', async () => {
-    const r = await axios.get(`https://www.moneycontrol.com/india/stockpricequote/${sym}`, { headers:{'User-Agent':UA}, timeout:6000, validateStatus:()=>true });
-    return { status: r.status, len: String(r.data).length };
-  });
-  res.json(out);
-});
-
 // GET /api/stocks/ratios/:symbol - financial ratios from screener.in
 router.get('/ratios/:symbol', async (req, res) => {
   try {
