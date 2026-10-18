@@ -87,28 +87,69 @@ async function sendViaResend({ from, to, subject, html }){
   return r.json()
 }
 
-// Unified email sender — tries SMTP first (localhost), falls back to Resend API (Render)
+// EmailJS API — free 200/month, sends to ANY email, no domain verification needed
+// Setup: https://dashboard.emailjs.com → Email Services (add Gmail) → Email Templates
+async function sendViaEmailJS({ to, subject, html }){
+  const serviceId = process.env.EMAILJS_SERVICE_ID
+  const templateId = process.env.EMAILJS_TEMPLATE_ID
+  const publicKey = process.env.EMAILJS_PUBLIC_KEY
+  if(!serviceId || !templateId || !publicKey) return null
+  const r = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      service_id: serviceId,
+      template_id: templateId,
+      user_id: publicKey,
+      template_params: {
+        to_email: to,
+        subject,
+        html_content: html
+      }
+    })
+  })
+  if(!r.ok){
+    const err = await r.text().catch(()=>r.statusText)
+    throw new Error(`EmailJS ${r.status}: ${err}`)
+  }
+  return { ok: true }
+}
+
+// Unified email sender — priority: EmailJS (any email) → Resend → SMTP (localhost)
 async function sendEmail({ to, subject, html }){
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER
-  // If RESEND_API_KEY is set, prefer it (works from cloud servers)
+  // 1. EmailJS — works for ANY recipient, no domain verification
+  if(process.env.EMAILJS_SERVICE_ID){
+    console.log(`📧 Sending via EmailJS to ${to}...`)
+    await sendViaEmailJS({ to, subject, html })
+    console.log(`📧 EmailJS sent to ${to}`)
+    return { method: 'emailjs' }
+  }
+  // 2. Resend — works if domain verified
   if(process.env.RESEND_API_KEY){
     console.log(`📧 Sending via Resend API to ${to}...`)
+    const from = process.env.SMTP_FROM || process.env.SMTP_USER
     const r = await sendViaResend({ from, to, subject, html })
     console.log(`📧 Resend sent to ${to}:`, r?.id || 'ok')
     return { method: 'resend', id: r?.id }
   }
-  // Otherwise try SMTP
+  // 3. SMTP — works on localhost
   const transporter = createTransport()
   if(!transporter){
     console.log(`📧 [MOCK] Would send to ${to}`)
     return { method: 'mock', mock: true }
   }
   try{
+    const from = process.env.SMTP_FROM || process.env.SMTP_USER
     await transporter.sendMail({ from, to, subject, html })
     console.log(`📧 SMTP sent to ${to}`)
     return { method: 'smtp' }
   } catch(e){
-    // SMTP failed (blocked from cloud) — try Resend as backup
+    // SMTP failed (blocked from cloud) — try API fallbacks
+    if(process.env.EMAILJS_SERVICE_ID){
+      console.log(`📧 SMTP failed (${e.message}) — trying EmailJS...`)
+      await sendViaEmailJS({ to, subject, html })
+      return { method: 'emailjs-fallback' }
+    }
     if(process.env.RESEND_API_KEY){
       console.log(`📧 SMTP failed (${e.message}) — trying Resend...`)
       const r = await sendViaResend({ from, to, subject, html })

@@ -50,8 +50,13 @@ router.get('/test-smtp', async (req,res)=>{
   const host = process.env.SMTP_HOST
   const user = process.env.SMTP_USER
   const pass = process.env.SMTP_PASS
+  const emailjs = {
+    configured: !!(process.env.EMAILJS_SERVICE_ID && process.env.EMAILJS_TEMPLATE_ID && process.env.EMAILJS_PUBLIC_KEY),
+    serviceId: process.env.EMAILJS_SERVICE_ID || null
+  }
+  const resend = { configured: !!process.env.RESEND_API_KEY }
   if(!host || !user || !pass){
-    return res.json({ ok:false, error:'SMTP env vars not set', has:{host:!!host, user:!!user, pass:!!pass} })
+    return res.json({ ok:false, error:'SMTP env vars not set', has:{host:!!host, user:!!user, pass:!!pass}, emailjs, resend })
   }
   const results = {}
   for(const port of [465, 587]){
@@ -63,15 +68,16 @@ router.get('/test-smtp', async (req,res)=>{
       results[port] = `FAIL: ${e.message} (${e.code||''})`
     }
   }
-  res.json({ ok:Object.values(results).some(v=>v==='WORKS'), host, user, results })
+  res.json({ ok:Object.values(results).some(v=>v==='WORKS'), host, user, results, emailjs, resend })
 })
 
 // Diagnostic: send a quick test email
 router.post('/test-email', async (req,res)=>{
   const to = req.body?.email || 'sartist100@gmail.com'
+  const hasEmailJS = !!(process.env.EMAILJS_SERVICE_ID && process.env.EMAILJS_TEMPLATE_ID && process.env.EMAILJS_PUBLIC_KEY)
   const hasResend = !!process.env.RESEND_API_KEY
   const hasSmtp = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
-  if(!hasResend && !hasSmtp) return res.json({ ok:false, error:'No email configured (need RESEND_API_KEY or SMTP vars)' })
+  if(!hasEmailJS && !hasResend && !hasSmtp) return res.json({ ok:false, error:'No email configured (need EMAILJS_*, RESEND_API_KEY, or SMTP vars)' })
   try{
     const { sendEmail } = await import('../services/newsletterService.js')
     const result = await sendEmail({
@@ -81,7 +87,7 @@ router.post('/test-email', async (req,res)=>{
     })
     res.json({ ok:true, to, method: result.method })
   }catch(e){
-    res.json({ ok:false, error:e.message, code:e.code, hasResend, hasSmtp })
+    res.json({ ok:false, error:e.message, code:e.code, hasEmailJS, hasResend, hasSmtp })
   }
 })
 
