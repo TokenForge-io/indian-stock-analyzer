@@ -43,7 +43,8 @@ const corsOptions = {
 };
 
 const io = new Server(httpServer, {
-  cors: { origin: isAllowed, methods: ['GET', 'POST'] }
+  // Socket.IO cors origin must be (origin, callback) => — returning a boolean hangs the request
+  cors: { origin: (origin, callback) => callback(null, isAllowed(origin)), methods: ['GET', 'POST'] }
 });
 
 app.use(cors(corsOptions));

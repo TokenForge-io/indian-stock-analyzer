@@ -1,6 +1,42 @@
 import axios from 'axios';
 import NodeCache from 'node-cache';
+import yahooService from './yahooService.js';
 const cache = new NodeCache({ stdTTL: 3600 });
+
+// Yahoo fallback — screener.in is blocked from cloud IPs (Render/AWS)
+async function ratiosFromYahoo(sym){
+  const s = await yahooService.getQuoteSummary(sym);
+  if(!s) return null;
+  const d = s.defaultKeyStatistics || {};
+  const f = s.financialData || {};
+  const t = s.summaryDetail || {};
+  const p = s.price || {};
+  const kpi = {
+    pe: t.trailingPE?.fmt || d.trailingPE?.fmt || '-',
+    pb: d.priceToBook?.fmt || '-',
+    roe: f.returnOnEquity?.fmt || '-',
+    roce: '-',
+    debtToEquity: f.debtToEquity?.fmt ? String(f.debtToEquity.fmt).replace(/\s*%\s*$/,'') + '%' : '-',
+    currentRatio: f.currentRatio?.fmt || '-',
+    interestCoverage: f.interestCoverage?.fmt || '-',
+    peg: d.pegRatio?.fmt || '-',
+    dividendYield: t.dividendYield?.fmt || '-',
+    roceLatest: '-',
+    marketCap: p.marketCap?.fmt ? (p.marketCap.fmt.includes('Cr') ? p.marketCap.fmt : `₹${p.marketCap.fmt}`) : '-',
+    bookValue: d.bookValue?.fmt ? `₹${d.bookValue.fmt}` : '-',
+    faceValue: '-',
+    week52High: t.fiftyTwoWeekHigh?.fmt || p.fiftyTwoWeekHigh?.fmt || '-',
+    week52Low: t.fiftyTwoWeekLow?.fmt || p.fiftyTwoWeekLow?.fmt || '-',
+    debtorDays: '-',
+    inventoryDays: '-',
+    eps: d.trailingEps?.fmt || '-',
+    beta: t.beta?.fmt || '-',
+    profitMargin: f.profitMargins?.fmt || '-',
+    revenueGrowth: f.revenueGrowth?.fmt || '-',
+    source: 'Yahoo Finance'
+  };
+  return kpi;
+}
 
 export async function getRatios(symbol){
   const sym = symbol.replace('.NS','').replace('.BO','').toUpperCase();
@@ -11,7 +47,7 @@ export async function getRatios(symbol){
   try{
     const r = await axios.get(`https://www.screener.in/company/${sym}/`, {
       headers: {'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
-      timeout: 8000
+      timeout: 4000
     });
     const html = r.data;
 
@@ -85,10 +121,22 @@ export async function getRatios(symbol){
       raw: ratios
     };
     // Filter to only include those we found
+    // If screener returned a block/challenge page, all values are '-' — fall back to Yahoo
+    const foundCount = Object.values(ratios).length;
+    if(foundCount === 0){
+      console.warn(`ratios screener parsed 0 values for ${sym} (blocked?) -> trying Yahoo`);
+      const y = await ratiosFromYahoo(sym);
+      if(y){ cache.set(key, y); return y; }
+      return null;
+    }
     cache.set(key, kpi);
     return kpi;
   }catch(e){
-    console.warn(`ratios fail ${sym}: ${e.message}`);
+    console.warn(`ratios screener fail ${sym}: ${e.message} -> trying Yahoo`);
+    try{
+      const y = await ratiosFromYahoo(sym);
+      if(y){ cache.set(key, y); return y; }
+    }catch(e2){ console.warn(`ratios yahoo fail ${sym}: ${e2.message}`); }
     return null;
   }
 }
