@@ -69,7 +69,7 @@ router.get('/analysis/:symbol', async (req, res) => {
     // Try screener with 4s timeout, else fallback to hardcoded map (screener currently rate-limited after 2000 scan)
     const withTimeout = (p, ms) => Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), ms))]);
     let fund = null;
-    try{ fund = await withTimeout(screener.getFundamentals(req.params.symbol), 4000); }catch{}
+    try{ fund = await withTimeout(screener.getFundamentals(req.params.symbol), 2000); }catch{}
     if(!fund || !fund.pe){
       const fb = FALLBACK[req.params.symbol.replace('.NS','').toUpperCase()];
       if(fb) fund = fb;

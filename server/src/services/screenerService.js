@@ -8,8 +8,8 @@ export async function getFundamentals(symbol) {
   const cached = cache.get(key);
   if (cached) return cached;
 
-  // Retry logic with backoff for 429/timeout
-  for(let attempt=0; attempt<3; attempt++){
+  // Fast fail — screener.in blocks cloud IPs (Render/AWS). FALLBACK data covers this.
+  for(let attempt=0; attempt<1; attempt++){
     try {
       const r = await axios.get(`https://www.screener.in/company/${sym}/`, {
         headers: { 
@@ -17,7 +17,7 @@ export async function getFundamentals(symbol) {
           'Accept':'text/html,application/xhtml+xml',
           'Accept-Language':'en-US,en;q=0.9'
         },
-        timeout: 15000
+        timeout: 4000
       });
     const html = r.data;
     const start = html.indexOf('id="top-ratios"');
@@ -50,11 +50,6 @@ export async function getFundamentals(symbol) {
     cache.set(key, result);
     return result;
     } catch (e) {
-      const isRetryable = e.code==='ECONNABORTED' || e.response?.status===429 || e.message.includes('timeout');
-      if(isRetryable && attempt < 2){
-        await new Promise(r=>setTimeout(r, 1500*(attempt+1)));
-        continue;
-      }
       console.warn(`screener fail ${sym}: ${e.message}`);
       return null;
     }

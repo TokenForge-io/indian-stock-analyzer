@@ -24,21 +24,26 @@ const PORT = process.env.PORT || 5000;
 // e.g. CLIENT_URL="https://my-app.vercel.app,http://localhost:5173"
 const CLIENT_ORIGINS = (process.env.CLIENT_URL || 'http://localhost:5173')
   .split(',')
-  .map(s => s.trim())
+  .map(s => s.trim().replace(/\/+$/, '')) // strip trailing slashes
   .filter(Boolean);
+
+// Slash-safe CORS check — also auto-allow any *.vercel.app domain
+const isAllowed = (origin) => {
+  if (!origin) return true; // curl, server-to-server, mobile apps
+  const clean = origin.replace(/\/+$/, '');
+  return CLIENT_ORIGINS.includes(clean) || clean.endsWith('.vercel.app');
+};
 
 const corsOptions = {
   origin(origin, callback) {
-    // allow requests with no origin (curl, server-to-server, mobile apps)
-    if (!origin || CLIENT_ORIGINS.includes(origin)) return callback(null, true);
-    return callback(null, false);
+    callback(null, isAllowed(origin));
   },
   methods: ['GET', 'POST'],
   credentials: false
 };
 
 const io = new Server(httpServer, {
-  cors: { origin: CLIENT_ORIGINS, methods: ['GET', 'POST'] }
+  cors: { origin: isAllowed, methods: ['GET', 'POST'] }
 });
 
 app.use(cors(corsOptions));
@@ -119,6 +124,6 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
   console.log(`📈 Indian Stock Analyzer ready - NSE/BSE via Yahoo Finance`);
   console.log(`🌐 API: http://localhost:${PORT}/api/health`);
-  console.log(`🔒 CORS origins: ${CLIENT_ORIGINS.join(', ')}`);
+  console.log(`🔒 CORS origins: ${CLIENT_ORIGINS.join(', ')} + *.vercel.app fallback`);
   scheduleDailyAt7PM();
 });
