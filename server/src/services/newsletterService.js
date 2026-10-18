@@ -118,13 +118,47 @@ async function sendViaEmailJS({ to, subject, html }){
   return { ok: true }
 }
 
-// Compact portfolio HTML for EmailJS (50KB payload limit) — strips styles, shortens text
+// Compact portfolio HTML for EmailJS (50KB payload limit) — uses <style> block instead of inline styles
 function portfolioHtmlCompact(picks, indices=[], movers={gainers:[], losers:[]}, summary=''){
-  const row = (s,i)=>`<tr><td>${i+1}</td><td><b>${s.symbol}</b> (${s.verdict||''} ${s.score}/100)</td><td align="right">₹${s.price?.toFixed(0)}</td><td align="right">₹${s.target?.toFixed(0)}</td><td align="right" style="color:${s.upside>=0?'green':'red'}">+${s.upside?.toFixed(1)}%</td></tr>${s.summary?`<tr><td colspan="5" style="font-size:11px;color:#999">${s.summary.slice(0,100)}${s.summary.length>100?'...':''} ${s.pros?.length?'✓ '+s.pros.slice(0,2).join(', '):''} ${s.cons?.length?'✕ '+s.cons.slice(0,1).join(', '):''}</td></tr>`:''}`
-  const tbl = (title,list)=>`<h3>${title}</h3><table border="1" cellpadding="4" cellspacing="0" width="100%"><tr><th>#</th><th>Stock</th><th align="right">Price</th><th align="right">Target</th><th align="right">Upside</th></tr>${list.map(row).join('')}</table>`
-  const idx = indices.length?`<p><b>Indices:</b> ${indices.map(i=>`${i.name} ${i.price?.toFixed(0)} (${i.changePercent>=0?'+':''}${i.changePercent?.toFixed(2)}%)`).join(' • ')}</p>`:''
-  const mv = (movers.gainers?.length)?`<p><b>Gainers:</b> ${movers.gainers.slice(0,5).map(q=>`${q.symbol.replace('.NS','')} +${q.regularMarketChangePercent?.toFixed(1)}%`).join(' • ')}<br/><b>Losers:</b> ${(movers.losers||[]).slice(0,5).map(q=>`${q.symbol.replace('.NS','')} ${q.regularMarketChangePercent?.toFixed(1)}%`).join(' • ')}</p>`:''
-  return `<div style="font-family:sans-serif;color:#ddd"><h2 style="color:#2962FF">Indian Stock Analyzer — AI Portfolio</h2><p>${summary||'AI scanned 2,000 NSE stocks'}</p>${idx}${mv}${tbl('🟢 Steady Growth — 10',picks.steady||[])}${tbl('🟡 Mid Growth — 10',picks.mid||[])}${tbl('🟠 Aggressive Growth — 10',picks.aggressive||[])}<p style="font-size:11px;color:#888">Sources: Yahoo • Screener.in • NSE • Not SEBI advice</p></div>`
+  const stockRow = (s,i)=>`<tr>
+    <td class="num">${i+1}</td>
+    <td><b>${s.symbol}</b><div class="sub">${s.verdict||''} • Score ${s.score}/100 • RSI ${s.rsi?.toFixed(0)||'-'} • P/E ${s.pe||'-'} • ROE ${s.roe||'-'}%</div></td>
+    <td class="num">₹${s.price?.toFixed(0)}</td>
+    <td class="num blue">₹${s.target?.toFixed(0)}</td>
+    <td class="num ${s.upside>=0?'grn':'red'}">${s.upside>=0?'+':''}${s.upside?.toFixed(1)}%</td>
+  </tr>${s.summary||s.pros?.length?`<tr><td colspan="5" class="detail">${s.summary?`<b>Why:</b> ${s.summary.slice(0,140)}${s.summary.length>140?'...':''}`:''}${s.pros?.length?`<div class="grn">✓ ${s.pros.slice(0,3).join(' • ')}</div>`:''}${s.cons?.length?`<div class="red">✕ ${s.cons.slice(0,2).join(' • ')}</div>`:''}</td></tr>`:''}`
+  const tbl = (title,list,color)=>`<h3 style="color:${color}">${title}</h3>
+    <table><thead><tr><th>#</th><th>Stock</th><th class="num">Price</th><th class="num">Target 12M</th><th class="num">Upside</th></tr></thead>
+    <tbody>${list.map(stockRow).join('')}</tbody></table>`
+  const idx = indices.length?`<div class="box"><h3>📈 Market Indices</h3><table><thead><tr><th>Index</th><th class="num">Price</th><th class="num">Change</th></tr></thead><tbody>${indices.map(i=>`<tr><td><b>${i.name}</b></td><td class="num">${i.price?.toFixed(2)}</td><td class="num ${i.change>=0?'grn':'red'}">${i.change>=0?'+':''}${i.change?.toFixed(2)} (${i.changePercent?.toFixed(2)}%)</td></tr>`).join('')}</tbody></table></div>`:''
+  const moversHtml = movers.gainers?.length?`<div class="box"><h3>🔥 Top Movers</h3><table><thead><tr><th colspan="2" class="grn">Top Gainers</th><th colspan="2" class="red">Top Losers</th></tr></thead><tbody>${Array.from({length:5},(_,i)=>{const g=movers.gainers[i],l=movers.losers?.[i];return `<tr><td><b>${g?g.symbol.replace('.NS',''):''}</b></td><td class="num grn">${g?'+'+(g.regularMarketChangePercent?.toFixed(2))+'%':''}</td><td><b>${l?l.symbol.replace('.NS',''):''}</b></td><td class="num red">${l?(l.regularMarketChangePercent?.toFixed(2))+'%':''}</td></tr>`}).join('')}</tbody></table></div>`:''
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#0f141a;color:#d1d4dc;margin:0;padding:0}
+    .wrap{max-width:640px;margin:0 auto;padding:20px}
+    h1{color:#2962FF;font-size:22px;margin:0 0 4px}
+    h2{color:#d1d4dc;font-size:18px}
+    h3{font-size:15px;margin:20px 0 8px;border-bottom:1px solid #2a2e39;padding-bottom:4px}
+    .sub{color:#787b86;font-size:11px;font-weight:normal}
+    .box{background:#131722;border:1px solid #2a2e39;border-radius:8px;padding:12px;margin:12px 0}
+    table{width:100%;border-collapse:collapse;background:#1e222d;font-size:12px;margin:0 0 4px}
+    th{background:#131722;color:#787b86;font-size:11px;padding:6px;text-align:left;border:1px solid #2a2e39}
+    td{padding:7px 8px;border:1px solid #2a2e39;vertical-align:top}
+    .num{text-align:right;font-family:monospace}
+    .grn{color:#089981}.red{color:#F23645}.blue{color:#2962FF}
+    .detail{background:#131722;font-size:11px;color:#a1a6b5;line-height:1.5}
+    .meta{color:#787b86;font-size:11px}
+    .summary{background:#131722;border:1px solid #2a2e39;border-radius:8px;padding:12px;font-size:12px;line-height:1.6;color:#a1a6b5}
+  </style></head><body><div class="wrap">
+    <h1>Indian Stock Analyzer — AI Portfolio</h1>
+    <p class="meta">Deep scan of 2,000 NSE stocks • ${new Date().toLocaleString('en-IN',{timeZone:'Asia/Kolkata'})} IST • Not SEBI advice</p>
+    <div class="summary"><b style="color:#d1d4dc">📊 Market Summary:</b> ${summary||`AI scanned ${picks.scanned||2000} stocks. Steady (low vol, high ROE), Mid (balanced), Aggressive (high upside).`}</div>
+    ${idx}${moversHtml}
+    <p class="meta">Your AI portfolio — <b>Top 30</b> (10 Steady / 10 Mid / 10 Aggressive) picked after deep scan.</p>
+    ${tbl('🟢 Steady Growth — 10 Stocks',picks.steady||[], '#089981')}
+    ${tbl('🟡 Mid Growth — 10 Stocks',picks.mid||[], '#f59e0b')}
+    ${tbl('🟠 Aggressive Growth — 10 Stocks',picks.aggressive||[], '#F23645')}
+    <p class="meta">Sources: Yahoo Finance • Screener.in • NSE India • Broker consensus • Not SEBI registered</p>
+  </div></body></html>`
 }
 
 // Unified email sender — priority: EmailJS (any email) → Resend → SMTP (localhost)
