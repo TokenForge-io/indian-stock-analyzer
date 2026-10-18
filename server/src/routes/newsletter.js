@@ -66,25 +66,22 @@ router.get('/test-smtp', async (req,res)=>{
   res.json({ ok:Object.values(results).some(v=>v==='WORKS'), host, user, results })
 })
 
-// Diagnostic: send a quick test email (no portfolio, just "test" text)
+// Diagnostic: send a quick test email
 router.post('/test-email', async (req,res)=>{
   const to = req.body?.email || 'sartist100@gmail.com'
-  const host = process.env.SMTP_HOST
-  const user = process.env.SMTP_USER
-  const pass = process.env.SMTP_PASS
-  if(!host || !user || !pass) return res.json({ ok:false, error:'SMTP env vars not set' })
+  const hasResend = !!process.env.RESEND_API_KEY
+  const hasSmtp = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
+  if(!hasResend && !hasSmtp) return res.json({ ok:false, error:'No email configured (need RESEND_API_KEY or SMTP vars)' })
   try{
-    const t = nodemailer.createTransport({ host, port: Number(process.env.SMTP_PORT||587), secure: process.env.SMTP_SECURE==='true', auth:{user, pass}, connectionTimeout: 10000 })
-    await t.verify()
-    const info = await t.sendMail({
-      from: process.env.SMTP_FROM || user,
+    const { sendEmail } = await import('../services/newsletterService.js')
+    const result = await sendEmail({
       to,
       subject: 'SMTP Test — Indian Stock Analyzer',
-      html: '<h2>SMTP works!</h2><p>If you received this email, email sending is working on the server.</p>'
+      html: '<h2>Email works!</h2><p>If you received this email, email sending is working on the server.</p>'
     })
-    res.json({ ok:true, to, messageId: info.messageId })
+    res.json({ ok:true, to, method: result.method })
   }catch(e){
-    res.json({ ok:false, error:e.message, code:e.code })
+    res.json({ ok:false, error:e.message, code:e.code, hasResend, hasSmtp })
   }
 })
 

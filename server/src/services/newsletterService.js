@@ -69,6 +69,55 @@ function createTransport(){
   })
 }
 
+// Resend API — works from any server (Render/Vercel/AWS), no SMTP needed
+// Free: 3,000 emails/month — https://resend.com
+async function sendViaResend({ from, to, subject, html }){
+  const apiKey = process.env.RESEND_API_KEY
+  if(!apiKey) return null
+  const fromAddr = process.env.RESEND_FROM || 'onboarding@resend.dev'
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: fromAddr, to: [to], subject, html })
+  })
+  if(!r.ok){
+    const err = await r.text().catch(()=>r.statusText)
+    throw new Error(`Resend API ${r.status}: ${err}`)
+  }
+  return r.json()
+}
+
+// Unified email sender — tries SMTP first (localhost), falls back to Resend API (Render)
+async function sendEmail({ to, subject, html }){
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER
+  // If RESEND_API_KEY is set, prefer it (works from cloud servers)
+  if(process.env.RESEND_API_KEY){
+    console.log(`📧 Sending via Resend API to ${to}...`)
+    const r = await sendViaResend({ from, to, subject, html })
+    console.log(`📧 Resend sent to ${to}:`, r?.id || 'ok')
+    return { method: 'resend', id: r?.id }
+  }
+  // Otherwise try SMTP
+  const transporter = createTransport()
+  if(!transporter){
+    console.log(`📧 [MOCK] Would send to ${to}`)
+    return { method: 'mock', mock: true }
+  }
+  try{
+    await transporter.sendMail({ from, to, subject, html })
+    console.log(`📧 SMTP sent to ${to}`)
+    return { method: 'smtp' }
+  } catch(e){
+    // SMTP failed (blocked from cloud) — try Resend as backup
+    if(process.env.RESEND_API_KEY){
+      console.log(`📧 SMTP failed (${e.message}) — trying Resend...`)
+      const r = await sendViaResend({ from, to, subject, html })
+      return { method: 'resend-fallback', id: r?.id }
+    }
+    throw e
+  }
+}
+
 function portfolioHtml(picks, indices=[], movers={gainers:[], losers:[]}, summary=''){
   const stockBlock = (s,i)=> {
     const why = s.summary ? `<div style="margin:4px 0 2px;color:#d1d4dc;font-size:11px;line-height:1.4"><b>Why:</b> ${s.summary.slice(0,180)}${s.summary.length>180?'...':''}</div>` : ''
@@ -183,21 +232,11 @@ export async function sendDailyPortfolio({ immediate=false }={}){
     console.log('📧 No subscribers — skipping send')
     return { sent: 0 }
   }
-  const transporter = createTransport()
-  if(!transporter){
-    console.log('📧 [MOCK SEND] Would send to:', emails.join(', '))
-    console.log('📧 HTML preview length:', html.length)
-    return { sent: emails.length, mock: true }
-  }
+  const subject = `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`
   let sent = 0
   for(const to of emails){
     try{
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || process.env.SMTP_USER,
-        to,
-        subject: `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`,
-        html
-      })
+      await sendEmail({ to, subject, html })
       sent++
     }catch(e){ console.error('📧 send failed to', to, e.message) }
   }
@@ -266,24 +305,15 @@ export async function sendPortfolioTo(email){
     marketSummary = `${nifty ? `NIFTY 50 ${nifty.price?.toFixed(2)} (${nifty.changePercent?.toFixed(2)}%)` : ''} ${sensex ? `• SENSEX ${sensex.price?.toFixed(2)} (${sensex.changePercent?.toFixed(2)}%)` : ''} • Breadth: ${adv} gainers vs ${dec} losers. AI scanned ${picks?.scanned||0} stocks.`
   }catch(e){ console.log('📧 movers/indices fail', e.message) }
   const html = portfolioHtml(picks || {steady:[],mid:[],aggressive:[],scanned:0}, indices, movers, marketSummary)
-  const transporter = createTransport()
-  if(!transporter){
-    console.log(`📧 [MOCK] Would send portfolio to ${clean}, html ${html.length}`)
-    return { ok:true, mock:true, to: clean }
-  }
-  try{
-    await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to: clean,
-      subject: `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`,
-      html
-    })
-    console.log(`📧 Portfolio sent to ${clean}`)
-    return { ok:true, to: clean }
-  }catch(e){
-    console.error(`📧 Portfolio send FAILED to ${clean}:`, e.message, e.code || '')
-    throw e
-  }
+  const result = await sendEmail({
+    to: clean,
+    subject: `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`,
+    html
+  })
+  if(result.mock) return { ok:true, mock:true, to: clean }
+  console.log(`📧 Portfolio sent to ${clean} via ${result.method}`)
+  return { ok:true, to: clean, method: result.method }
 }
 
-export default { addEmail, removeEmail, getEmails, getCount, sendDailyPortfolio, scheduleDailyAt7PM, sendPortfolioTo }
+export { sendEmail }
+export default { addEmail, removeEmail, getEmails, getCount, sendDailyPortfolio, scheduleDailyAt7PM, sendPortfolioTo, sendEmail }
