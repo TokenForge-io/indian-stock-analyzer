@@ -32,12 +32,15 @@ router.post('/send-now', async (req,res)=>{
 })
 
 // On-demand single send — POST /api/newsletter/send-portfolio {email}
+// Fire-and-forget: respond immediately, send email in background (takes 30-60s on Render)
 router.post('/send-portfolio', async (req,res)=>{
   try{
     const email = req.body?.email || req.query.email
     if(!email) return res.status(400).json({error:'email required'})
-    const r = await sendPortfolioTo(email)
-    res.json(r)
+    const clean = String(email).trim().toLowerCase()
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) return res.status(400).json({error:'Invalid email'})
+    res.json({ ok:true, to: clean, background:true })
+    sendPortfolioTo(clean).catch(e=>console.error('📧 background send failed:', e.message))
   }catch(e){ res.status(400).json({error:e.message}) }
 })
 

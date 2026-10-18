@@ -150,8 +150,8 @@ export default function AIPicksPage({ onSelect, onBack }){
             <button disabled={sending || !email} onClick={async()=>{
               setSending(true); setMsg('')
               try{
-                const r = await axios.post('/api/newsletter/send-portfolio', { email }, { timeout: 90000 })
-                setMsg(r.data.mock ? `⚠️ SMTP not configured on server — mock sent to ${r.data.to}. Add SMTP env vars on Render.` : `Sent to ${r.data.to} ✓ Check inbox/spam`)
+                const r = await axios.post('/api/newsletter/send-portfolio', { email }, { timeout: 15000 })
+                setMsg(r.data.mock ? `⚠️ SMTP not configured on server — mock sent to ${r.data.to}. Add SMTP env vars on Render.` : `📧 Sending to ${r.data.to} — email arrives in ~1 minute ✓ Check inbox/spam`)
               }catch(e){ setMsg(e.response?.data?.error || 'Failed to send') }
               setSending(false)
             }} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-bold text-white whitespace-nowrap">
