@@ -118,12 +118,28 @@ async function sendViaEmailJS({ to, subject, html }){
   return { ok: true }
 }
 
+// Compact portfolio HTML for EmailJS (50KB payload limit) — strips styles, shortens text
+function portfolioHtmlCompact(picks, indices=[], movers={gainers:[], losers:[]}, summary=''){
+  const row = (s,i)=>`<tr><td>${i+1}</td><td><b>${s.symbol}</b> (${s.verdict||''} ${s.score}/100)</td><td align="right">₹${s.price?.toFixed(0)}</td><td align="right">₹${s.target?.toFixed(0)}</td><td align="right" style="color:${s.upside>=0?'green':'red'}">+${s.upside?.toFixed(1)}%</td></tr>${s.summary?`<tr><td colspan="5" style="font-size:11px;color:#999">${s.summary.slice(0,100)}${s.summary.length>100?'...':''} ${s.pros?.length?'✓ '+s.pros.slice(0,2).join(', '):''} ${s.cons?.length?'✕ '+s.cons.slice(0,1).join(', '):''}</td></tr>`:''}`
+  const tbl = (title,list)=>`<h3>${title}</h3><table border="1" cellpadding="4" cellspacing="0" width="100%"><tr><th>#</th><th>Stock</th><th align="right">Price</th><th align="right">Target</th><th align="right">Upside</th></tr>${list.map(row).join('')}</table>`
+  const idx = indices.length?`<p><b>Indices:</b> ${indices.map(i=>`${i.name} ${i.price?.toFixed(0)} (${i.changePercent>=0?'+':''}${i.changePercent?.toFixed(2)}%)`).join(' • ')}</p>`:''
+  const mv = (movers.gainers?.length)?`<p><b>Gainers:</b> ${movers.gainers.slice(0,5).map(q=>`${q.symbol.replace('.NS','')} +${q.regularMarketChangePercent?.toFixed(1)}%`).join(' • ')}<br/><b>Losers:</b> ${(movers.losers||[]).slice(0,5).map(q=>`${q.symbol.replace('.NS','')} ${q.regularMarketChangePercent?.toFixed(1)}%`).join(' • ')}</p>`:''
+  return `<div style="font-family:sans-serif;color:#ddd"><h2 style="color:#2962FF">Indian Stock Analyzer — AI Portfolio</h2><p>${summary||'AI scanned 2,000 NSE stocks'}</p>${idx}${mv}${tbl('🟢 Steady Growth — 10',picks.steady||[])}${tbl('🟡 Mid Growth — 10',picks.mid||[])}${tbl('🟠 Aggressive Growth — 10',picks.aggressive||[])}<p style="font-size:11px;color:#888">Sources: Yahoo • Screener.in • NSE • Not SEBI advice</p></div>`
+}
+
 // Unified email sender — priority: EmailJS (any email) → Resend → SMTP (localhost)
-async function sendEmail({ to, subject, html }){
-  // 1. EmailJS — works for ANY recipient, no domain verification
+async function sendEmail({ to, subject, html, htmlCompact }){
+  console.log(`📧 Email to ${to}: html=${html.length} chars (${(html.length/1024).toFixed(1)}KB)`)
+  // 1. EmailJS — works for ANY recipient, no domain verification (50KB limit)
   if(process.env.EMAILJS_SERVICE_ID){
     console.log(`📧 Sending via EmailJS to ${to}...`)
-    await sendViaEmailJS({ to, subject, html })
+    // EmailJS rejects >50KB — use compact version if provided and too big
+    let payload = html
+    if(payload.length > 45000 && htmlCompact){
+      console.log(`📧 HTML too large for EmailJS (${payload.length} chars) — using compact version (${htmlCompact.length} chars)`)
+      payload = htmlCompact
+    }
+    await sendViaEmailJS({ to, subject, html: payload })
     console.log(`📧 EmailJS sent to ${to}`)
     return { method: 'emailjs' }
   }
@@ -270,6 +286,7 @@ export async function sendDailyPortfolio({ immediate=false }={}){
     marketSummary = `${nifty ? `NIFTY 50 ${nifty.price?.toFixed(2)} (${nifty.changePercent?.toFixed(2)}%)` : ''} ${sensex ? `• SENSEX ${sensex.price?.toFixed(2)} (${sensex.changePercent?.toFixed(2)}%)` : ''} • Breadth: ${adv} gainers vs ${dec} losers in NIFTY 50. AI scanned ${finalPicks?.scanned||picks.scanned} stocks — Steady (low vol, high ROE), Mid (balanced), Aggressive (high upside). Top movers inside.`
   }catch(e){ console.log('📧 movers/indices fetch failed', e.message) }
   const html = portfolioHtml(finalPicks || picks, indices, movers, marketSummary)
+  const htmlCompact = portfolioHtmlCompact(finalPicks || picks, indices, movers, marketSummary)
   const emails = getEmails()
   console.log(`📧 Sending daily portfolio to ${emails.length} subscribers...`)
   if(!emails.length){
@@ -280,7 +297,7 @@ export async function sendDailyPortfolio({ immediate=false }={}){
   let sent = 0
   for(const to of emails){
     try{
-      await sendEmail({ to, subject, html })
+      await sendEmail({ to, subject, html, htmlCompact })
       sent++
     }catch(e){ console.error('📧 send failed to', to, e.message) }
   }
@@ -349,10 +366,12 @@ export async function sendPortfolioTo(email){
     marketSummary = `${nifty ? `NIFTY 50 ${nifty.price?.toFixed(2)} (${nifty.changePercent?.toFixed(2)}%)` : ''} ${sensex ? `• SENSEX ${sensex.price?.toFixed(2)} (${sensex.changePercent?.toFixed(2)}%)` : ''} • Breadth: ${adv} gainers vs ${dec} losers. AI scanned ${picks?.scanned||0} stocks.`
   }catch(e){ console.log('📧 movers/indices fail', e.message) }
   const html = portfolioHtml(picks || {steady:[],mid:[],aggressive:[],scanned:0}, indices, movers, marketSummary)
+  const htmlCompact = portfolioHtmlCompact(picks || {steady:[],mid:[],aggressive:[],scanned:0}, indices, movers, marketSummary)
   const result = await sendEmail({
     to: clean,
     subject: `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`,
-    html
+    html,
+    htmlCompact
   })
   if(result.mock) return { ok:true, mock:true, to: clean }
   console.log(`📧 Portfolio sent to ${clean} via ${result.method}`)
