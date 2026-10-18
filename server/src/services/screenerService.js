@@ -50,10 +50,10 @@ export async function getFundamentals(symbol) {
     cache.set(key, result);
     return result;
     } catch (e) {
-      console.warn(`screener fail ${sym}: ${e.message}`);
-      return null;
+      console.warn(`screener blocked ${sym} (cloud IP)`);
+      return { _blocked: true };
     }
   }
-  return null;
+  return { _blocked: true };
 }
 export default { getFundamentals };

@@ -124,19 +124,22 @@ async function getQuoteSummary(symbol) {
   const key = `summary:${sym}`;
   const cached = cache.get(key);
   if (cached) return cached;
+  const modules = ['price', 'summaryDetail', 'defaultKeyStatistics', 'financialData'];
   try {
-    const modules = ['price', 'summaryDetail', 'defaultKeyStatistics', 'financialData'];
     const res = await yahooFinance.quoteSummary(sym, { modules });
-    cache.set(key, res, 300);
+    cache.set(key, res, 3600); // 1 hour — fundamentals don't change intraday
     return res;
   } catch (e) {
-    // fallback minimal
-    const q = cache.get(`quote:${sym}`);
-    return {
-      price: { marketCap: { fmt: '-' }, averageDailyVolume10Day: { fmt: '-' } },
-      summaryDetail: { trailingPE: { fmt: '-' }, fiftyTwoWeekHigh: { fmt: '-' }, fiftyTwoWeekLow: { fmt: '-' }, dividendYield: { fmt: '-' } },
-      defaultKeyStatistics: { trailingEps: { fmt: '-' } }
-    };
+    // Retry once on rate limit
+    if (e.message.includes('Too Many Requests') || e.message.includes('429')) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const res = await yahooFinance.quoteSummary(sym, { modules });
+        cache.set(key, res, 3600);
+        return res;
+      } catch { /* fall through */ }
+    }
+    return null; // caller decides fallback
   }
 }
 

@@ -1,5 +1,6 @@
 import realtime from './realtimeService.js';
 import screener from './screenerService.js';
+import yahooService from './yahooService.js';
 import newsService from './newsService.js';
 import targetService from './targetService.js';
 import NodeCache from 'node-cache';
@@ -33,7 +34,7 @@ export async function getAIAnalysis(symbol){
   const cached = cache.get(key);
   if(cached) return cached;
 
-  const [history1y, history3mo, quote, fund, news, target] = await Promise.all([
+  let [history1y, history3mo, quote, fund, news, target] = await Promise.all([
     realtime.getHistorical(sym, '1y', '1d').catch(()=>[]),
     realtime.getHistorical(sym, '3mo', '1d').catch(()=>[]),
     realtime.getQuote(sym).catch(()=>null),
@@ -41,6 +42,25 @@ export async function getAIAnalysis(symbol){
     newsService.getNews(sym).catch(()=>[]),
     targetService.getTargetPrice(sym).catch(()=>null)
   ]);
+  // If screener blocked (Render cloud IP), use Yahoo live fundamentals
+  if(fund?._blocked || !fund?.pe){
+    const s = await yahooService.getQuoteSummary(sym).catch(()=>null);
+    if(s?.summaryDetail?.trailingPE){
+      fund = {
+        pe: String(s.summaryDetail.trailingPE.raw || s.summaryDetail.trailingPE.fmt || ''),
+        roe: s.financialData?.returnOnEquity?.fmt || s.financialData?.returnOnEquity?.raw,
+        dividendYield: s.summaryDetail?.dividendYield?.fmt || s.summaryDetail?.dividendYield?.raw,
+        week52High: s.summaryDetail?.fiftyTwoWeekHigh?.fmt,
+        week52Low: s.summaryDetail?.fiftyTwoWeekLow?.fmt,
+        marketCap: s.price?.marketCap?.fmt,
+        bookValue: s.defaultKeyStatistics?.bookValue?.fmt,
+        currentPrice: s.financialData?.currentPrice?.fmt,
+        source: 'Yahoo Finance'
+      };
+    } else {
+      fund = null;
+    }
+  }
 
   const closes1y = history1y.map(d=>d.close).filter(Boolean);
   const closes3mo = history3mo.map(d=>d.close).filter(Boolean);

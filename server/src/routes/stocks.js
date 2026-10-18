@@ -66,15 +66,33 @@ router.get('/analysis/:symbol', async (req, res) => {
     const closes = data.map(d => d.close);
     const analysis = analyzeIndicators(closes);
     const quote = await realtime.getQuote(req.params.symbol);
-    // Try screener with 4s timeout, else fallback to hardcoded map (screener currently rate-limited after 2000 scan)
+    // Fundamentals priority: screener.in (localhost) → Yahoo live (Render) → hardcoded fallback
     const withTimeout = (p, ms) => Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), ms))]);
     let fund = null;
     try{ fund = await withTimeout(screener.getFundamentals(req.params.symbol), 2000); }catch{}
-    if(!fund || !fund.pe){
-      const fb = FALLBACK[req.params.symbol.replace('.NS','').toUpperCase()];
-      if(fb) fund = fb;
+    if(fund?._blocked || !fund?.pe){
+      // screener blocked (Render cloud IP) — use Yahoo live fundamentals
+      const s = await yahooService.getQuoteSummary(req.params.symbol).catch(() => null);
+      if(s?.summaryDetail?.trailingPE){
+        fund = {
+          pe: String(s.summaryDetail.trailingPE.raw || s.summaryDetail.trailingPE.fmt),
+          marketCap: s.price?.marketCap?.fmt || null,
+          week52High: s.summaryDetail?.fiftyTwoWeekHigh?.fmt,
+          week52Low: s.summaryDetail?.fiftyTwoWeekLow?.fmt,
+          dividendYield: s.summaryDetail?.dividendYield?.fmt || s.summaryDetail?.dividendYield?.raw || null,
+          bookValue: s.defaultKeyStatistics?.bookValue?.fmt,
+          roe: s.financialData?.returnOnEquity?.fmt,
+          currentPrice: s.financialData?.currentPrice?.fmt,
+          source: 'Yahoo Finance'
+        };
+      } else {
+        // Yahoo also failed — hardcoded fallback
+        const fb = FALLBACK[req.params.symbol.replace('.NS','').toUpperCase()];
+        fund = fb ? { ...fb, source: 'fallback' } : null;
+      }
+    } else {
+      fund.source = 'screener.in';
     }
-    const summary = fund ? null : await yahooService.getQuoteSummary(req.params.symbol).catch(() => null);
 
     // Prefer screener fundamentals, fill missing 52W from realtime quote if needed
     const week52HighFromQuote = quote.fiftyTwoWeekHigh || quote._chart?.meta?.fiftyTwoWeekHigh;
@@ -85,7 +103,7 @@ router.get('/analysis/:symbol', async (req, res) => {
       high: quote.regularMarketDayHigh,
       low: quote.regularMarketDayLow,
       mktCap: fund?.marketCap || (quote.marketCap?.fmt) || '-',
-      pe: fund?.pe || summary?.summaryDetail?.trailingPE?.fmt || summary?.summaryDetail?.trailingPE || '-',
+      pe: fund?.pe || '-',
       volume: quote.regularMarketVolume,
       prevClose: quote.previousClose,
       week52High: fund?.week52High || week52HighFromQuote,
@@ -105,16 +123,9 @@ router.get('/analysis/:symbol', async (req, res) => {
         week52Low: fund.week52Low || week52LowFromQuote,
         dividendYield: fund.dividendYield,
         bookValue: fund.bookValue,
+        roe: fund.roe,
         currentPrice: fund.currentPrice,
         source: fund.source
-      } : summary ? {
-        pe: summary.summaryDetail?.trailingPE,
-        eps: summary.defaultKeyStatistics?.trailingEps,
-        marketCap: summary.price?.marketCap,
-        week52High: summary.summaryDetail?.fiftyTwoWeekHigh || week52HighFromQuote,
-        week52Low: summary.summaryDetail?.fiftyTwoWeekLow || week52LowFromQuote,
-        dividendYield: summary.summaryDetail?.dividendYield,
-        avgVolume: summary.price?.averageDailyVolume10Day
       } : {
         week52High: week52HighFromQuote,
         week52Low: week52LowFromQuote
