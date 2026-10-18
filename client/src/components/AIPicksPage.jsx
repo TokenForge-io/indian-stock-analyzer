@@ -73,16 +73,15 @@ export default function AIPicksPage({ onSelect, onBack }){
     return ()=>clearInterval(id)
   },[])
   useEffect(()=>{
-    // If full market not yet done, poll picks again every 15s to get updated full scan
-    if(data && !data.fullMarket && progress?.percent < 100){
-      const t = setTimeout(()=>{
-        axios.get('/api/stocks/ai-picks').then(r=>{
-          if(r.data.fullMarket || r.data.scanned > data.scanned) setData(r.data)
-        }).catch(()=>{})
-      }, 15000)
-      return ()=>clearTimeout(t)
-    }
-  },[data, progress])
+    // Refetch picks while scan incomplete — independent of progress polling so timer isn't cleared
+    if(!data || data.fullMarket) return
+    const t = setInterval(()=>{
+      axios.get('/api/stocks/ai-picks').then(r=>{
+        if(r.data.fullMarket || (r.data.steady?.length && r.data.scanned > (data.scanned||0))) setData(r.data)
+      }).catch(()=>{})
+    }, 15000)
+    return ()=>clearInterval(t)
+  },[data?.fullMarket, data?.scanned])
   if(loading) return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <div className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 p-4">

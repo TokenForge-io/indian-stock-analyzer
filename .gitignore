@@ -8,3 +8,5 @@ server/output.log
 *.log
 .DS_Store
 Thumbs.db
+
+server/src/data/newsletter.json

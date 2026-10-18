@@ -56,8 +56,7 @@ router.get('/test-smtp', async (req,res)=>{
   const user = process.env.SMTP_USER
   const pass = process.env.SMTP_PASS
   const emailjs = {
-    configured: !!(process.env.EMAILJS_SERVICE_ID && process.env.EMAILJS_TEMPLATE_ID && process.env.EMAILJS_PUBLIC_KEY),
-    serviceId: process.env.EMAILJS_SERVICE_ID || null
+    configured: !!(process.env.EMAILJS_SERVICE_ID && process.env.EMAILJS_TEMPLATE_ID && process.env.EMAILJS_PUBLIC_KEY)
   }
   const resend = { configured: !!process.env.RESEND_API_KEY }
   if(!host || !user || !pass){
@@ -73,12 +72,13 @@ router.get('/test-smtp', async (req,res)=>{
       results[port] = `FAIL: ${e.message} (${e.code||''})`
     }
   }
-  res.json({ ok:Object.values(results).some(v=>v==='WORKS'), host, user, results, emailjs, resend })
+  res.json({ ok:Object.values(results).some(v=>v==='WORKS'), results, emailjs, resend })
 })
 
-// Diagnostic: send a quick test email
+// Diagnostic: send a quick test email (explicit recipient required — no default)
 router.post('/test-email', async (req,res)=>{
-  const to = req.body?.email || 'sartist100@gmail.com'
+  const to = req.body?.email
+  if(!to) return res.status(400).json({ error:'email required' })
   const hasEmailJS = !!(process.env.EMAILJS_SERVICE_ID && process.env.EMAILJS_TEMPLATE_ID && process.env.EMAILJS_PUBLIC_KEY)
   const hasResend = !!process.env.RESEND_API_KEY
   const hasSmtp = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)

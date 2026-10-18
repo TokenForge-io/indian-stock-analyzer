@@ -16,9 +16,11 @@ export default function Watchlist({ onSelect }){
   const [input, setInput] = useState('')
 
   const fetchQuotes = async()=>{
-    if(!list.length) return
-    const res = await axios.post('/api/stocks/quotes', { symbols: list })
-    setQuotes(res.data)
+    if(!list.length){ setQuotes([]); return } // clear stale quotes when list empties
+    try{
+      const res = await axios.post('/api/stocks/quotes', { symbols: list })
+      setQuotes(res.data.filter(q=>q && q.regularMarketPrice))
+    }catch{ /* backend down — keep last known quotes, next 5s tick retries */ }
   }
   useEffect(()=>{ fetchQuotes(); const id=setInterval(fetchQuotes,5000); return()=>clearInterval(id)},[list])
   useEffect(()=> localStorage.setItem('watchlist', JSON.stringify(list)),[list])

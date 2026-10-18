@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import axios from 'axios'
 import { io } from 'socket.io-client'
 import StockChart from './components/StockChart.jsx'
@@ -29,33 +29,38 @@ export default function App() {
   const [chartPeriod, setChartPeriod] = useState('3mo')
 
   const [error, setError] = useState(null)
+  const fetchSeq = useRef(0)
   const fetchData = async (sym) => {
     const period = chartPeriod
     const interval = period==='5y' ? '1wk' : '1d'
-    setLoading(true); setError(null)
+    const seq = ++fetchSeq.current
+    setLoading(true); setError(null); 
     try {
       const [ana, hist] = await Promise.all([
         axios.get(`/api/stocks/analysis/${sym}`),
         axios.get(`/api/stocks/history/${sym}?period=${period}&interval=${interval}`)
       ])
+      if (seq !== fetchSeq.current) return // stale response — newer request superseded it
       setAnalysis(ana.data)
       setHistory(hist.data)
       setLivePrice(ana.data.price)
     } catch (e) { 
+      if (seq !== fetchSeq.current) return
       console.error(e); 
       const msg = e.response?.data?.error || e.message
       // Don't alert for rate-limit, just show banner (backend now uses mocks, so this rarely happens)
       if (msg.includes('Too Many Requests')) setError('Yahoo rate-limited - showing cached/mock data. Try again in 30s.')
       else setError(msg)
+      
     }
-    setLoading(false)
+    if (seq === fetchSeq.current) setLoading(false)
   }
 
   useEffect(() => { fetchData(symbol); axios.get(`/api/stocks/info/${symbol}`).then(r=>setCompanyInfo(r.data)).catch(()=>setCompanyInfo(null)) }, [symbol, chartPeriod])
   // Prefetch AI picks in background as soon as website opens (so 2,000 scan starts early)
   useEffect(()=>{
-    fetch('/api/stocks/ai-picks').catch(()=>{})
-    fetch('/api/stocks/ai-picks/progress').catch(()=>{})
+    axios.get('/api/stocks/ai-picks').catch(()=>{})
+    axios.get('/api/stocks/ai-picks/progress').catch(()=>{})
   },[])
 
   // Subscribe to live updates via socket
@@ -152,7 +157,7 @@ export default function App() {
               ))}
               <span className="text-xs text-[#5d606b] self-center ml-2 font-mono hidden md:inline">Candle ↔ Line • Google-like line for beginners</span>
             </div>
-            {history.length > 0 ? <StockChart data={history} /> : <p className="text-gray-500 py-20 text-center">Loading chart...</p>}
+            {history.length > 0 ? <StockChart data={history} /> : loading ? <p className="text-gray-500 py-20 text-center">Loading chart...</p> : <p className="text-gray-500 py-20 text-center">Chart unavailable — {error || 'no data'} <button onClick={()=>fetchData(symbol)} className="ml-2 px-3 py-1 bg-gray-800 rounded text-xs">Retry</button></p>}
           </div>
 
           {analysis?.kpi && (

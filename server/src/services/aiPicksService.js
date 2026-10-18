@@ -160,20 +160,31 @@ async function buildPicksFromResults(results, scannedLabel){
     updatedAt: new Date().toISOString(),
     scanned: results.length,
     totalScanned: NSE_UNIVERSE.length,
+    fullMarket: scannedLabel.includes('2000'),
     disclaimer: scannedLabel.includes('2000') ? 'Top 30 AI picks — 10 per portfolio across NSE Full Market (2,000 scanned) • Scores out of 100 • Not SEBI advice' : 'Top 30 AI picks — 10 per portfolio across NSE Top 55 • Scores out of 100 • Full market scan in progress — will update to 2,000'
   };
 }
 
+let lastFullScanAttempt = 0;
+const FULL_SCAN_COOLDOWN_MS = 10 * 60 * 1000; // don't restart a failed scan more than once / 10 min
+
 export async function startFullScan(){
   if(isScanning) return;
+  if(Date.now() - lastFullScanAttempt < FULL_SCAN_COOLDOWN_MS) return;
+  lastFullScanAttempt = Date.now();
   isScanning = true;
   scanProgress = { status: 'scanning full market', scanned: 0, total: NSE_UNIVERSE.length, percent: 0, found: 0 };
   console.log('Starting FULL MARKET scan of', NSE_UNIVERSE.length, 'stocks...');
   try{
     const results = await scanUniverse(NSE_UNIVERSE, 'FULL 2000');
     const picks = await buildPicksFromResults(results, 'FULL 2000');
-    fullScanCache = picks;
-    cache.set('ai-picks-full', picks);
+    // Don't cache empty results (e.g. Yahoo 429 outage) — keep serving small scan
+    if(picks.steady.length){
+      fullScanCache = picks;
+      cache.set('ai-picks-full', picks, 6 * 3600); // 6h TTL — refresh daily via cron
+    } else {
+      console.warn('Full scan returned 0 picks — not caching (will retry after cooldown)');
+    }
     scanProgress = { status: 'done', scanned: NSE_UNIVERSE.length, total: NSE_UNIVERSE.length, percent: 100, found: results.length };
     console.log('FULL MARKET scan done:', picks.steady.length, picks.mid.length, picks.aggressive.length);
   }catch(e){
@@ -207,15 +218,18 @@ async function ensureSmallScan(){
 setTimeout(()=> ensureSmallScan().catch(()=>{}), 1000);
 
 export async function getAIPicks(){
-  // If full scan done, return it
-  if(fullScanCache) return fullScanCache;
+  // If full scan done, return it (cache has 6h TTL so it refreshes)
   const fullCached = cache.get('ai-picks-full');
-  if(fullCached) { fullScanCache = fullCached; return fullCached; }
+  if(fullCached){
+    fullScanCache = fullCached;
+    return fullCached;
+  }
+  fullScanCache = null; // expired — fall back to small scan and re-trigger
 
   const key = 'ai-picks-small';
   const cached = cache.get(key);
   if(cached){
-    if(!isScanning && !fullScanCache) startFullScan().catch(()=>{});
+    if(!isScanning) startFullScan().catch(()=>{});
     return { ...cached, progress: scanProgress, fullMarket: false };
   }
 

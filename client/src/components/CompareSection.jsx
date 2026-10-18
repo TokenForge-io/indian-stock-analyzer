@@ -68,7 +68,7 @@ function CompareCard({ symbol, onRemove }){
       )}
       {data.fundamentals && (
         <div className="px-3 pb-3 grid grid-cols-3 gap-2 text-xs">
-          <KPI label="ROE" value={data.fundamentals.dividendYield ? `${data.fundamentals.dividendYield}` : '-'} />
+          <KPI label="ROE" value={data.fundamentals.roe ? `${data.fundamentals.roe}%` : '-'} />
           <KPI label="Div Yield" value={data.fundamentals.dividendYield || '-'} />
           <KPI label="Book" value={data.fundamentals.bookValue || '-'} />
         </div>

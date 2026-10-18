@@ -164,26 +164,32 @@ function portfolioHtmlCompact(picks, indices=[], movers={gainers:[], losers:[]},
 // Unified email sender — priority: EmailJS (any email) → Resend → SMTP (localhost)
 async function sendEmail({ to, subject, html, htmlCompact }){
   console.log(`📧 Email to ${to}: html=${html.length} chars (${(html.length/1024).toFixed(1)}KB)`)
+  // EmailJS rejects >50KB — shrink to compact version when available
+  const emailjsPayload = () => (html.length > 45000 && htmlCompact) ? htmlCompact : html
   // 1. EmailJS — works for ANY recipient, no domain verification (50KB limit)
   if(process.env.EMAILJS_SERVICE_ID){
-    console.log(`📧 Sending via EmailJS to ${to}...`)
-    // EmailJS rejects >50KB — use compact version if provided and too big
-    let payload = html
-    if(payload.length > 45000 && htmlCompact){
-      console.log(`📧 HTML too large for EmailJS (${payload.length} chars) — using compact version (${htmlCompact.length} chars)`)
-      payload = htmlCompact
+    try{
+      console.log(`📧 Sending via EmailJS to ${to}...`)
+      const payload = emailjsPayload()
+      if(payload.length !== html.length) console.log(`📧 HTML too large for EmailJS — using compact version (${payload.length} chars)`)
+      await sendViaEmailJS({ to, subject, html: payload })
+      console.log(`📧 EmailJS sent to ${to}`)
+      return { method: 'emailjs' }
+    }catch(e){
+      console.warn(`📧 EmailJS failed to ${to}: ${e.message} — trying next method...`)
     }
-    await sendViaEmailJS({ to, subject, html: payload })
-    console.log(`📧 EmailJS sent to ${to}`)
-    return { method: 'emailjs' }
   }
   // 2. Resend — works if domain verified
   if(process.env.RESEND_API_KEY){
-    console.log(`📧 Sending via Resend API to ${to}...`)
-    const from = process.env.SMTP_FROM || process.env.SMTP_USER
-    const r = await sendViaResend({ from, to, subject, html })
-    console.log(`📧 Resend sent to ${to}:`, r?.id || 'ok')
-    return { method: 'resend', id: r?.id }
+    try{
+      console.log(`📧 Sending via Resend API to ${to}...`)
+      const from = process.env.SMTP_FROM || process.env.SMTP_USER
+      const r = await sendViaResend({ from, to, subject, html })
+      console.log(`📧 Resend sent to ${to}:`, r?.id || 'ok')
+      return { method: 'resend', id: r?.id }
+    }catch(e){
+      console.warn(`📧 Resend failed to ${to}: ${e.message} — trying next method...`)
+    }
   }
   // 3. SMTP — works on localhost
   const transporter = createTransport()
@@ -197,18 +203,8 @@ async function sendEmail({ to, subject, html, htmlCompact }){
     console.log(`📧 SMTP sent to ${to}`)
     return { method: 'smtp' }
   } catch(e){
-    // SMTP failed (blocked from cloud) — try API fallbacks
-    if(process.env.EMAILJS_SERVICE_ID){
-      console.log(`📧 SMTP failed (${e.message}) — trying EmailJS...`)
-      await sendViaEmailJS({ to, subject, html })
-      return { method: 'emailjs-fallback' }
-    }
-    if(process.env.RESEND_API_KEY){
-      console.log(`📧 SMTP failed (${e.message}) — trying Resend...`)
-      const r = await sendViaResend({ from, to, subject, html })
-      return { method: 'resend-fallback', id: r?.id }
-    }
-    throw e
+    // SMTP failed (blocked from cloud) — API fallbacks already tried above; give a clear error
+    throw new Error(`All email methods failed (EmailJS/Resend/SMTP): ${e.message}`)
   }
 }
 
@@ -265,7 +261,7 @@ function portfolioHtml(picks, indices=[], movers={gainers:[], losers:[]}, summar
     ${table('🟢 Steady Growth', picks.steady, '#089981')}
     ${table('🟡 Mid Growth', picks.mid, '#f59e0b')}
     ${table('🟠 Aggressive Growth', picks.aggressive, '#F23645')}
-    <p style="font-size:11px;color:#5d606b;margin-top:16px">Open your analyzer: http://localhost:5000 • Unsubscribe: POST /api/newsletter/unsubscribe {email}</p>
+    <p style="font-size:11px;color:#5d606b;margin-top:16px">Open your analyzer: https://indian-stock-analyzer-psi.vercel.app</p>
     <p style="font-size:11px;color:#5d606b">Sources: Yahoo Finance • Screener.in • NSE India • Broker consensus • Not SEBI registered</p>
   </div>`
 }
@@ -327,6 +323,12 @@ export async function sendDailyPortfolio({ immediate=false }={}){
     console.log('📧 No subscribers — skipping send')
     return { sent: 0 }
   }
+  // Don't send an empty portfolio (scan failed / still running)
+  const totalPicks = (finalPicks?.steady?.length||0) + (finalPicks?.mid?.length||0) + (finalPicks?.aggressive?.length||0)
+  if(totalPicks === 0){
+    console.warn('📧 Picks empty after wait — skipping send (no empty portfolio emails)')
+    return { sent: 0, skipped: 'no picks' }
+  }
   const subject = `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`
   let sent = 0
   for(const to of emails){
@@ -384,6 +386,14 @@ export async function sendPortfolioTo(email){
     }
   }
   console.log(`📧 Picks: ${picks?.steady?.length||0}+${picks?.mid?.length||0}+${picks?.aggressive?.length||0} (${picks?.scanned||0} scanned)`)
+  const nPicks = (picks?.steady?.length||0) + (picks?.mid?.length||0) + (picks?.aggressive?.length||0)
+  if(nPicks === 0){
+    // Last chance: getAIPicks re-triggers a scan when cache is empty — one more poll
+    picks = await aiPicksService.getAIPicks().catch(()=>null)
+    if(!((picks?.steady?.length||0) + (picks?.mid?.length||0) + (picks?.aggressive?.length||0))){
+      throw new Error('Picks unavailable right now — scan in progress. Try again in a minute.')
+    }
+  }
   let indices=[]
   let movers={gainers:[], losers:[]}
   let marketSummary=''

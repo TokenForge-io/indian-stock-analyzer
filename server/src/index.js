@@ -20,6 +20,10 @@ const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 5000;
 
+// Don't let one stray rejection kill the Render dyno
+process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e?.message || e));
+process.on('uncaughtException', (e) => console.error('uncaughtException:', e?.message || e));
+
 // Allowed CORS origins — comma-separated in CLIENT_URL env
 // e.g. CLIENT_URL="https://my-app.vercel.app,http://localhost:5173"
 const CLIENT_ORIGINS = (process.env.CLIENT_URL || 'http://localhost:5173')
@@ -75,8 +79,10 @@ io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
   socket.on('subscribe', async (symbols) => {
-    watchlistSubscriptions.set(socket.id, symbols);
-    console.log(`Subscribed ${socket.id} to`, symbols);
+    // Cap subscription size — prevents a single client from triggering hundreds of Yahoo fetches
+    const list = Array.isArray(symbols) ? symbols.filter(s => typeof s === 'string').slice(0, 30) : [];
+    watchlistSubscriptions.set(socket.id, list);
+    console.log(`Subscribed ${socket.id} to`, list);
   });
 
   socket.on('unsubscribe', () => {
@@ -89,24 +95,43 @@ io.on('connection', (socket) => {
   });
 });
 
-// Poll and broadcast every 3 seconds
+// Poll and broadcast every 3 seconds — re-entrancy guard prevents overlapping ticks
+let quotesTickRunning = false;
 setInterval(async () => {
-  for (const [socketId, symbols] of watchlistSubscriptions.entries()) {
-    try {
-      const quotes = await realtime.getQuotes(symbols);
-      io.to(socketId).emit('quotes', quotes);
-    } catch (e) {
-      console.error('Poll error', e.message);
+  if (quotesTickRunning || watchlistSubscriptions.size === 0) return;
+  quotesTickRunning = true;
+  try {
+    // Fetch quotes per unique symbol set once, then fan out to sockets in parallel
+    const entries = [...watchlistSubscriptions.entries()];
+    const uniqueSymbols = [...new Set(entries.flatMap(([, symbols]) => Array.isArray(symbols) ? symbols : []))].slice(0, 50);
+    if (uniqueSymbols.length) {
+      const quotes = await realtime.getQuotes(uniqueSymbols);
+      const bySymbol = new Map(quotes.map(q => [q.symbol, q]));
+      await Promise.all(entries.map(async ([socketId, symbols]) => {
+        const socketQuotes = (Array.isArray(symbols) ? symbols : []).map(s => bySymbol.get(realtime.normalize(s))).filter(Boolean);
+        if (socketQuotes.length) io.to(socketId).emit('quotes', socketQuotes);
+      }));
     }
+  } catch (e) {
+    console.error('Poll error', e.message);
+  } finally {
+    quotesTickRunning = false;
   }
 }, 3000);
 
-// Broadcast Nifty/Sensex every 5s to all
+// Broadcast Nifty/Sensex every 5s to all (skip if still running)
+let indicesTickRunning = false;
 setInterval(async () => {
+  if (indicesTickRunning) return;
+  indicesTickRunning = true;
   try {
     const indices = await realtime.getIndices();
     io.emit('indices', indices);
-  } catch {}
+  } catch (e) {
+    console.error('Indices poll error', e.message);
+  } finally {
+    indicesTickRunning = false;
+  }
 }, 5000);
 
 // SPA fallback — only if client/dist exists (local monorepo mode)
