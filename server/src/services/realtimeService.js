@@ -5,11 +5,25 @@ import { NSE_UNIVERSE } from '../data/nseUniverse.js';
 const cache = new NodeCache({ stdTTL: 3 }); // 3 sec for real-time feel
 const histCache = new NodeCache({ stdTTL: 60 });
 
+// Yahoo removed these symbols (demerger/delisted) — redirect to current ones
+const SYMBOL_ALIASES = {
+  'TATAMOTORS': 'TMCV',
+  'TATAMOTORS.NS': 'TMCV.NS',
+  'TATAMOTORS.BO': 'TMCV.BO',
+  'LTIM': 'LT',
+  'LTIM.NS': 'LT.NS',
+  'LTIM.BO': 'LT.BO',
+  'LTIMINDTREE': 'LT',
+  'LTIMINDTREE.NS': 'LT.NS',
+};
+
 const normalize = (s) => {
   if (!s) return s;
   if (s.startsWith('^')) return s;
-  if (s.includes('.')) return s.toUpperCase();
-  return `${s.toUpperCase()}.NS`;
+  const upper = s.toUpperCase();
+  if (SYMBOL_ALIASES[upper]) return SYMBOL_ALIASES[upper];
+  if (upper.includes('.')) return upper;
+  return `${upper}.NS`;
 };
 const UNIVERSE_SET = new Set(NSE_UNIVERSE.map(s=>s.toUpperCase()));
 
@@ -32,59 +46,51 @@ export async function getQuote(symbol) {
   const key = `rt:q:${sym}`;
   const cached = cache.get(key);
   if (cached) return cached;
+  let data = null;
   try {
-    const data = await fetchChart(sym, '1m', '1d');
+    data = await fetchChart(sym, '1m', '1d');
     if (!data?.meta) throw new Error('no meta');
-    const m = data.meta;
-    // Extract today's Open from first valid 1m candle (more accurate than meta)
-    let regularMarketOpen = m.regularMarketPrice; // fallback
-    try {
-      const opens = data.indicators?.quote?.[0]?.open;
-      if (opens) {
-        const firstValid = opens.find(v => v != null && v > 0);
-        if (firstValid) regularMarketOpen = firstValid;
-      }
-    } catch {}
-    const quote = {
-      symbol: m.symbol,
-      shortName: sym.replace('.NS',''),
-      regularMarketPrice: m.regularMarketPrice,
-      regularMarketChange: m.regularMarketPrice - m.previousClose,
-      regularMarketChangePercent: ((m.regularMarketPrice - m.previousClose)/m.previousClose)*100,
-      regularMarketDayHigh: m.regularMarketDayHigh,
-      regularMarketDayLow: m.regularMarketDayLow,
-      regularMarketOpen,
-      regularMarketVolume: m.regularMarketVolume,
-      previousClose: m.previousClose,
-      fiftyTwoWeekHigh: m.fiftyTwoWeekHigh,
-      fiftyTwoWeekLow: m.fiftyTwoWeekLow,
-      regularMarketTime: new Date(m.regularMarketTime*1000),
-      currency: m.currency || 'INR',
-      // extra for chart last candle
-      _chart: data
-    };
-    cache.set(key, quote);
-    return quote;
   } catch (e) {
-    console.warn(`realtime quote fail ${sym}: ${e.message}`);
-    const fallback = cache.get(key);
-    if (fallback) return fallback;
-    const base = sym.replace('.NS','').replace('.BO','').toUpperCase()
-    const isValid = sym.startsWith('^') || UNIVERSE_SET.has(base)
-    if(isValid){
-      // Yahoo throttled for real NSE symbol — return mock to keep movers/indices alive
-      return {
-        symbol: sym,
-        shortName: base,
-        regularMarketPrice: 1000 + Math.random()*500,
-        regularMarketChange: (Math.random()-0.5)*10,
-        regularMarketChangePercent: (Math.random()-0.5)*2,
-        regularMarketDayHigh: 0, regularMarketDayLow: 0, regularMarketOpen: 0, regularMarketVolume: 0, previousClose: 1000,
-        fiftyTwoWeekHigh: 0, fiftyTwoWeekLow: 0, _mock: true
+    const status = e.response?.status;
+    if ((status === 404 || e.message.includes('404')) && sym.endsWith('.NS')) {
+      const boSym = sym.replace('.NS', '.BO');
+      try {
+        console.warn(`realtime ${sym} 404 — retrying ${boSym}`);
+        data = await fetchChart(boSym, '1m', '1d');
+      } catch {
+        throw e;
       }
     }
-    throw new Error(`Company not found: ${base} — check symbol (e.g., PWL for Physics Wallah) or try search`);
+    if (!data?.meta) throw e;
   }
+  const m = data.meta;
+  let regularMarketOpen = m.regularMarketPrice;
+  try {
+    const opens = data.indicators?.quote?.[0]?.open;
+    if (opens) {
+      const firstValid = opens.find(v => v != null && v > 0);
+      if (firstValid) regularMarketOpen = firstValid;
+    }
+  } catch {}
+  const quote = {
+    symbol: m.symbol,
+    shortName: sym.replace('.NS','').replace('.BO',''),
+    regularMarketPrice: m.regularMarketPrice,
+    regularMarketChange: m.regularMarketPrice - m.previousClose,
+    regularMarketChangePercent: ((m.regularMarketPrice - m.previousClose)/m.previousClose)*100,
+    regularMarketDayHigh: m.regularMarketDayHigh,
+    regularMarketDayLow: m.regularMarketDayLow,
+    regularMarketOpen,
+    regularMarketVolume: m.regularMarketVolume,
+    previousClose: m.previousClose,
+    fiftyTwoWeekHigh: m.fiftyTwoWeekHigh,
+    fiftyTwoWeekLow: m.fiftyTwoWeekLow,
+    regularMarketTime: new Date(m.regularMarketTime*1000),
+    currency: m.currency || 'INR',
+    _chart: data
+  };
+  cache.set(key, quote);
+  return quote;
 }
 
 export async function getQuotes(symbols) {
@@ -104,31 +110,31 @@ export async function getHistorical(symbol, period='3mo', interval='1d') {
   const key = `rt:h:${sym}:${period}:${interval}`;
   const cached = histCache.get(key);
   if(cached) return cached;
-  try{
-    const rangeMap = {'1d':'1d','5d':'5d','1mo':'1mo','3mo':'3mo','6mo':'6mo','1y':'1y','5y':'5y'};
-    const range = rangeMap[period]||'3mo';
-    const data = await fetchChart(sym, interval, range);
+  const rangeMap = {'1d':'1d','5d':'5d','1mo':'1mo','3mo':'3mo','6mo':'6mo','1y':'1y','5y':'5y'};
+  const range = rangeMap[period]||'3mo';
+  let data = null;
+  try {
+    data = await fetchChart(sym, interval, range);
     if(!data?.timestamp || !data?.indicators?.quote?.[0]) throw new Error('no history');
-    const ts = data.timestamp;
-    const q = data.indicators.quote[0];
-    const out = ts.map((t,i)=>({
-      date: new Date(t*1000),
-      open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i]
-    })).filter(d=>d.close!=null);
-    histCache.set(key, out);
-    return out;
-  }catch(e){
-    console.warn(`history fail ${sym}: ${e.message}`);
-    const base = sym.replace('.NS','').replace('.BO','').toUpperCase()
-    const isValid = sym.startsWith('^') || UNIVERSE_SET.has(base)
-    if(isValid){
-      // mock history for valid symbols when throttled
-      let price=1000; const out=[]; const now=new Date();
-      for(let i=60;i>=0;i--){ const d=new Date(now); d.setDate(d.getDate()-i); price+=(Math.random()-0.5)*15; out.push({date:d, open:price-2, high:price+5, low:price-5, close:price, volume:1000000})}
-      return out;
+  } catch(e) {
+    const status = e.response?.status;
+    if((status === 404 || e.message.includes('404')) && sym.endsWith('.NS')){
+      const boSym = sym.replace('.NS','.BO');
+      try {
+        console.warn(`history ${sym} 404 — retrying ${boSym}`);
+        data = await fetchChart(boSym, interval, range);
+      } catch { throw e; }
     }
-    throw new Error(`History not found for ${base} — invalid symbol. Try PWL for Physics Wallah`);
+    if(!data?.timestamp || !data?.indicators?.quote?.[0]) throw e;
   }
+  const ts = data.timestamp;
+  const q = data.indicators.quote[0];
+  const out = ts.map((t,i)=>({
+    date: new Date(t*1000),
+    open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i]
+  })).filter(d=>d.close!=null);
+  histCache.set(key, out);
+  return out;
 }
 
 export async function getIndices(){

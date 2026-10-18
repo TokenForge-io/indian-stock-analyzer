@@ -141,7 +141,28 @@ async function getQuoteSummary(symbol) {
 }
 
 async function search(symbol) {
-  return await yahooFinance.search(symbol, { quotesCount: 10, newsCount: 0 });
+  try {
+    return await yahooFinance.search(symbol, { quotesCount: 10, newsCount: 0 });
+  } catch (e) {
+    console.warn(`yahoo search throttled for ${symbol}: ${e.message} -> local fallback`);
+    if (e.message.includes('Too Many Requests') || e.message.includes('404')) {
+      try {
+        const { NSE_UNIVERSE } = await import('../data/nseUniverse.js');
+        const q = symbol.toUpperCase().trim();
+        // alias: TATAMOTORS -> TMCV/TMPV (demerged), LTIM -> LT
+        const ALIASES = { 'TATAMOTORS':['TMCV','TMPV'], 'LTIM':['LT'], 'LTIMINDTREE':['LT'] };
+        const aliasHits = (ALIASES[q]||[]).map(a=>({symbol:a+'.NS',shortname:a,longname:q,exchange:'NSI',quoteType:'EQUITY'}));
+        // exact match first
+        const exact = NSE_UNIVERSE.includes(q) ? [{symbol:q+'.NS',shortname:q,longname:q,exchange:'NSI',quoteType:'EQUITY'}] : [];
+        // prefix match (query starts symbol) — not loose includes
+        const prefix = NSE_UNIVERSE.filter(s => s.startsWith(q) && s !== q).slice(0,5)
+          .map(s => ({ symbol: s+'.NS', shortname: s, longname: s, exchange: 'NSI', quoteType: 'EQUITY' }));
+        const all = [...aliasHits, ...exact, ...prefix].slice(0,10);
+        return { quotes: all };
+      } catch {}
+    }
+    return { quotes: [] };
+  }
 }
 
 async function getIndices() {

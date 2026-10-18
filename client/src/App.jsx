@@ -13,7 +13,7 @@ import AIPicksPage from './components/AIPicksPage.jsx'
 import HomePage from './components/HomePage.jsx'
 import Newsletter from './components/Newsletter.jsx'
 import { INDIAN_STOCKS } from './data/indianStocks.js'
-const socket = io('http://localhost:5000')
+const socket = import.meta.env.VITE_API_URL ? io(import.meta.env.VITE_API_URL) : io()
 
 export default function App() {
   const [symbol, setSymbol] = useState('RELIANCE')

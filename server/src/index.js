@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
@@ -19,18 +20,37 @@ const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 5000;
 
+// Allowed CORS origins — comma-separated in CLIENT_URL env
+// e.g. CLIENT_URL="https://my-app.vercel.app,http://localhost:5173"
+const CLIENT_ORIGINS = (process.env.CLIENT_URL || 'http://localhost:5173')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // allow requests with no origin (curl, server-to-server, mobile apps)
+    if (!origin || CLIENT_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  },
+  methods: ['GET', 'POST'],
+  credentials: false
+};
+
 const io = new Server(httpServer, {
-  cors: { origin: process.env.CLIENT_URL || "http://localhost:5173", methods: ["GET", "POST"] }
+  cors: { origin: CLIENT_ORIGINS, methods: ['GET', 'POST'] }
 });
 
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 
-// Serve React frontend (built) - so you only need http://localhost:5000
+// Serve React frontend if built locally (optional — on Render frontend lives on Vercel)
 const clientDist = path.join(__dirname, '../../client/dist');
-app.use(express.static(clientDist));
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+}
 
-// Routes
+// API routes
 app.use('/api/stocks', stockRoutes);
 app.use('/api/newsletter', newsletterRoutes);
 
@@ -42,14 +62,13 @@ app.get('/api/indices', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Socket.io for "real-time" pushes (polls Yahoo every 5s)
-const watchlistSubscriptions = new Map(); // socketId -> [symbols]
+// Socket.io for real-time pushes (polls Yahoo every 3s)
+const watchlistSubscriptions = new Map();
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
   socket.on('subscribe', async (symbols) => {
-    // symbols: ['RELIANCE.NS', 'TCS.NS', '^NSEI']
     watchlistSubscriptions.set(socket.id, symbols);
     console.log(`Subscribed ${socket.id} to`, symbols);
   });
@@ -64,7 +83,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Poll and broadcast every 3 seconds - real-time feel via Yahoo direct chart
+// Poll and broadcast every 3 seconds
 setInterval(async () => {
   for (const [socketId, symbols] of watchlistSubscriptions.entries()) {
     try {
@@ -76,7 +95,7 @@ setInterval(async () => {
   }
 }, 3000);
 
-// Also broadcast Nifty/Sensex every 5s to all
+// Broadcast Nifty/Sensex every 5s to all
 setInterval(async () => {
   try {
     const indices = await realtime.getIndices();
@@ -84,14 +103,22 @@ setInterval(async () => {
   } catch {}
 }, 5000);
 
-// Fallback to index.html for React Router
-app.get('*', (req, res) => {
-  res.sendFile(path.join(clientDist, 'index.html'));
-});
+// SPA fallback — only if client/dist exists (local monorepo mode)
+if (fs.existsSync(clientDist)) {
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+} else {
+  // API-only mode (Render): 404 any non-API route
+  app.get('*', (req, res) => {
+    res.status(404).json({ error: 'Not found. API only — frontend served separately.' });
+  });
+}
 
-httpServer.listen(PORT, () => {
-  console.log(`✅ Server running on http://localhost:${PORT}`);
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
   console.log(`📈 Indian Stock Analyzer ready - NSE/BSE via Yahoo Finance`);
-  console.log(`🌐 Open: http://localhost:${PORT} (frontend + API together)`);
+  console.log(`🌐 API: http://localhost:${PORT}/api/health`);
+  console.log(`🔒 CORS origins: ${CLIENT_ORIGINS.join(', ')}`);
   scheduleDailyAt7PM();
 });

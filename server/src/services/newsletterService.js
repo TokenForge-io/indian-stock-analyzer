@@ -230,4 +230,51 @@ export function scheduleDailyAt7PM(){
   }catch(e){ console.log('📧 cron schedule failed', e.message) }
 }
 
-export default { addEmail, removeEmail, getEmails, getCount, sendDailyPortfolio, scheduleDailyAt7PM }
+export async function sendPortfolioTo(email){
+  const clean = String(email||'').trim().toLowerCase()
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) throw new Error('Invalid email')
+  console.log(`📧 Send-portfolio on demand to ${clean}...`)
+  let picks = await aiPicksService.getAIPicks().catch(async ()=>{
+    await new Promise(r=>setTimeout(r, 3000))
+    return aiPicksService.getAIPicks()
+  })
+  if(!picks.steady?.length){
+    console.log('📧 Picks not ready — waiting...')
+    for(let i=0;i<20;i++){
+      await new Promise(r=>setTimeout(r, 3000))
+      const fresh = await aiPicksService.getAIPicks().catch(()=>null)
+      if(fresh?.steady?.length){ picks = fresh; break }
+    }
+  }
+  let indices=[]
+  let movers={gainers:[], losers:[]}
+  let marketSummary=''
+  try{
+    indices = await realtime.getIndices().catch(()=>[])
+    const NIFTY50 = ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BHARTIARTL","ITC","LT","KOTAKBANK","LTIM","AXISBANK","ASIANPAINT","MARUTI","TITAN","SUNPHARMA","BAJFINANCE","HCLTECH","WIPRO","ULTRACEMCO","NESTLEIND","POWERGRID","NTPC","ONGC","TATAMOTORS","TATASTEEL","HINDALCO","JSWSTEEL","ADANIENT","ADANIPORTS","COALINDIA","BPCL","BRITANNIA","EICHERMOT","GRASIM","HEROMOTOCO","HINDUNILVR","CIPLA","DIVISLAB","DRREDDY","APOLLOHOSP","BAJAJ-AUTO","BAJAJFINSV","INDUSINDBK","M&M","SHREECEM","TECHM","UPL","SBILIFE","TATACONSUM"]
+    const quotes = await realtime.getQuotes(NIFTY50).catch(()=>[])
+    const sorted = quotes.filter(q=>!q.error).sort((a,b)=>(b.regularMarketChangePercent||0)-(a.regularMarketChangePercent||0))
+    movers = { gainers: sorted.slice(0,5), losers: sorted.slice(-5).reverse() }
+    const nifty = indices.find(i=>i.name?.includes('NIFTY 50'))
+    const sensex = indices.find(i=>i.name?.includes('SENSEX'))
+    const adv = sorted.filter(q=>(q.regularMarketChangePercent||0)>0).length
+    const dec = sorted.filter(q=>(q.regularMarketChangePercent||0)<0).length
+    marketSummary = `${nifty ? `NIFTY 50 ${nifty.price?.toFixed(2)} (${nifty.changePercent?.toFixed(2)}%)` : ''} ${sensex ? `• SENSEX ${sensex.price?.toFixed(2)} (${sensex.changePercent?.toFixed(2)}%)` : ''} • Breadth: ${adv} gainers vs ${dec} losers. AI scanned ${picks.scanned} stocks.`
+  }catch(e){ console.log('📧 movers/indices fail', e.message) }
+  const html = portfolioHtml(picks, indices, movers, marketSummary)
+  const transporter = createTransport()
+  if(!transporter){
+    console.log(`📧 [MOCK] Would send portfolio to ${clean}, html ${html.length}`)
+    return { ok:true, mock:true, to: clean }
+  }
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: clean,
+    subject: `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`,
+    html
+  })
+  console.log(`📧 Portfolio sent to ${clean}`)
+  return { ok:true, to: clean }
+}
+
+export default { addEmail, removeEmail, getEmails, getCount, sendDailyPortfolio, scheduleDailyAt7PM, sendPortfolioTo }

@@ -62,6 +62,9 @@ export default function AIPicksPage({ onSelect, onBack }){
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [progress, setProgress] = useState(null)
+  const [email, setEmail] = useState('')
+  const [sending, setSending] = useState(false)
+  const [msg, setMsg] = useState('')
   useEffect(()=>{
     axios.get('/api/stocks/ai-picks').then(r=>setData(r.data)).catch(()=>{}).finally(()=>setLoading(false))
     const id = setInterval(()=>{
@@ -136,6 +139,27 @@ export default function AIPicksPage({ onSelect, onBack }){
         {!progress?.isScanning && data.fullMarket && <div className="bg-green-900/20 border border-green-800 rounded-xl p-2 text-sm text-green-400">✅ Full market scan complete — showing Top 30 from 2,000 NSE stocks</div>}
         {!progress?.isScanning && !data.fullMarket && <div className="bg-yellow-900/20 border border-yellow-800 rounded-xl p-2 text-sm text-yellow-400">⚡ Showing Top 55 picks — full 2,000 scan starting in background...</div>}
         <p className="text-sm text-gray-400">{data.disclaimer} • Updated {new Date(data.updatedAt).toLocaleString('en-IN')} • Click ⓘ for why • Scanned {data.scanned}/{data.totalScanned || data.scanned}</p>
+        {/* Send portfolio on email — same format as daily 7 PM */}
+        <div className="bg-gray-900 border border-blue-500/20 rounded-2xl p-4 flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
+          <div>
+            <p className="ai-premium text-sm font-bold text-white">📧 Send me portfolio on my email</p>
+            <p className="ai-body text-xs text-gray-400">Same format as daily 7 PM — Top 30 + Indices + Top Movers + per-stock Why/Pros/Cons</p>
+          </div>
+          <div className="flex gap-2 w-full md:w-auto">
+            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@gmail.com" className="flex-1 md:w-64 bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500" />
+            <button disabled={sending || !email} onClick={async()=>{
+              setSending(true); setMsg('')
+              try{
+                const r = await axios.post('/api/newsletter/send-portfolio', { email })
+                setMsg(r.data.mock ? `Mock sent to ${r.data.to} (configure SMTP for real)` : `Sent to ${r.data.to} ✓ Check inbox/spam`)
+              }catch(e){ setMsg(e.response?.data?.error || 'Failed to send') }
+              setSending(false)
+            }} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-bold text-white whitespace-nowrap">
+              {sending ? 'Sending...' : 'Send portfolio'}
+            </button>
+          </div>
+        </div>
+        {msg && <p className="text-sm text-blue-400 -mt-2">{msg}</p>}
         
         <section>
           <h2 className="ai-premium font-bold text-green-400 mb-3 tracking-tight">🟢 Steady Growth — 10 Stocks <span className="ai-body text-xs font-normal text-gray-500">• Low risk • 12M hold • Large cap stable</span></h2>
