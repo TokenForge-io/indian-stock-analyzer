@@ -1,6 +1,7 @@
 import axios from 'axios';
 import NodeCache from 'node-cache';
 import yahooService from './yahooService.js';
+import { FALLBACK } from '../data/fallbackFundamentals.js';
 const cache = new NodeCache({ stdTTL: 3600 });
 
 // Yahoo fallback — screener.in is blocked from cloud IPs (Render/AWS)
@@ -11,31 +12,69 @@ async function ratiosFromYahoo(sym){
   const f = s.financialData || {};
   const t = s.summaryDetail || {};
   const p = s.price || {};
+  const eps = d.trailingEps?.fmt || '-';
+  const bvNum = d.bookValue?.raw;
+  // Yahoo returns {} for returnOnEquity on most Indian stocks — derive ROE = EPS / book value
+  let roe = f.returnOnEquity?.fmt || '-';
+  if(roe === '-' && d.trailingEps?.raw && bvNum){
+    roe = `${((d.trailingEps.raw / bvNum) * 100).toFixed(2)} (derived)`;
+  }
   const kpi = {
     pe: t.trailingPE?.fmt || d.trailingPE?.fmt || '-',
     pb: d.priceToBook?.fmt || '-',
-    roe: f.returnOnEquity?.fmt || '-',
+    roe,
     roce: '-',
-    debtToEquity: f.debtToEquity?.fmt ? String(f.debtToEquity.fmt).replace(/\s*%\s*$/,'') + '%' : '-',
-    currentRatio: f.currentRatio?.fmt || '-',
+    debtToEquity: f.debtToEquity?.raw != null ? `${f.debtToEquity.raw.toFixed(2)}%` : '-',
+    currentRatio: f.currentRatio?.raw != null ? f.currentRatio.raw.toFixed(2) : '-',
     interestCoverage: f.interestCoverage?.fmt || '-',
     peg: d.pegRatio?.fmt || '-',
     dividendYield: t.dividendYield?.fmt || '-',
     roceLatest: '-',
-    marketCap: p.marketCap?.fmt ? (p.marketCap.fmt.includes('Cr') ? p.marketCap.fmt : `₹${p.marketCap.fmt}`) : '-',
-    bookValue: d.bookValue?.fmt ? `₹${d.bookValue.fmt}` : '-',
+    marketCap: p.marketCap?.raw ? `₹${(p.marketCap.raw / 1e7).toLocaleString('en-IN', {maximumFractionDigits: 0})} Cr` : '-',
+    bookValue: bvNum ? `₹${bvNum.toFixed(0)}` : '-',
     faceValue: '-',
     week52High: t.fiftyTwoWeekHigh?.fmt || p.fiftyTwoWeekHigh?.fmt || '-',
     week52Low: t.fiftyTwoWeekLow?.fmt || p.fiftyTwoWeekLow?.fmt || '-',
     debtorDays: '-',
     inventoryDays: '-',
-    eps: d.trailingEps?.fmt || '-',
+    eps,
     beta: t.beta?.fmt || '-',
     profitMargin: f.profitMargins?.fmt || '-',
     revenueGrowth: f.revenueGrowth?.fmt || '-',
     source: 'Yahoo Finance'
   };
   return kpi;
+}
+
+// Last resort — static NIFTY table + live 52W range from the v8 chart endpoint
+// (v8 chart needs no crumb and works from cloud IPs). Never returns null.
+async function ratiosFromStatic(sym){
+  const bare = sym.replace('.NS','').replace('.BO','').toUpperCase();
+  const fb = FALLBACK[bare] || {};
+  let hi = fb.week52High || '-', lo = fb.week52Low || '-', price = '-';
+  try{
+    const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(bare)}.NS?interval=1d&range=5d`, {
+      headers: {'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+      timeout: 8000
+    });
+    const meta = r.data?.chart?.result?.[0]?.meta;
+    if(meta?.fiftyTwoWeekHigh) hi = meta.fiftyTwoWeekHigh.toLocaleString('en-IN');
+    if(meta?.fiftyTwoWeekLow) lo = meta.fiftyTwoWeekLow.toLocaleString('en-IN');
+    if(meta?.regularMarketPrice) price = meta.regularMarketPrice.toLocaleString('en-IN');
+  }catch{}
+  return {
+    pe: fb.pe || '-', pb: '-', roe: '-', roce: '-',
+    debtToEquity: '-', currentRatio: '-', interestCoverage: '-', peg: '-',
+    dividendYield: fb.dividendYield || '-',
+    roceLatest: '-',
+    marketCap: fb.marketCap || '-',
+    bookValue: fb.bookValue || '-',
+    faceValue: '-',
+    week52High: hi, week52Low: lo,
+    debtorDays: '-', inventoryDays: '-',
+    price,
+    source: 'Reference data'
+  };
 }
 
 export async function getRatios(symbol){
@@ -118,6 +157,7 @@ export async function getRatios(symbol){
       week52Low: ratios['52W Low'] || '-',
       debtorDays: ratios['Debtor Days'] || '-',
       inventoryDays: ratios['Inventory Days'] || '-',
+      source: 'Screener.in',
       raw: ratios
     };
     // Filter to only include those we found
@@ -127,7 +167,9 @@ export async function getRatios(symbol){
       console.warn(`ratios screener parsed 0 values for ${sym} (blocked?) -> trying Yahoo`);
       const y = await ratiosFromYahoo(sym);
       if(y){ cache.set(key, y); return y; }
-      return null;
+      const s = await ratiosFromStatic(sym);
+      cache.set(key, s);
+      return s;
     }
     cache.set(key, kpi);
     return kpi;
@@ -137,7 +179,9 @@ export async function getRatios(symbol){
       const y = await ratiosFromYahoo(sym);
       if(y){ cache.set(key, y); return y; }
     }catch(e2){ console.warn(`ratios yahoo fail ${sym}: ${e2.message}`); }
-    return null;
+    const s = await ratiosFromStatic(sym);
+    cache.set(key, s);
+    return s;
   }
 }
 export default { getRatios };

@@ -1,7 +1,9 @@
 import yahooFinance from 'yahoo-finance2';
+import axios from 'axios';
 import NodeCache from 'node-cache';
 yahooFinance.suppressNotices(['yahooSurvey', 'ripHistorical']);
 const cache = new NodeCache({ stdTTL: 30 }); // 30 sec cache to avoid 429
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 
 // Mock generator when Yahoo rate-limits (so UI still works)
 function mockQuote(symbol) {
@@ -119,28 +121,77 @@ function getPeriodStart(period) {
   return d;
 }
 
+// --- Direct quoteSummary (cookie + crumb) -----------------------------------
+// yahoo-finance2's quoteSummary is broken (Yahoo returns 429 as non-JSON after the
+// library's crumb flow), so we do the cookie+crumb handshake ourselves with axios.
+let yahooCookie = null;
+let yahooCrumb = null;
+let crumbExpiresAt = 0;
+let crumbInFlight = null;
+
+async function getYahooAuth() {
+  if (yahooCookie && yahooCrumb && Date.now() < crumbExpiresAt) return;
+  if (crumbInFlight) return crumbInFlight;
+  crumbInFlight = (async () => {
+    try {
+      const res = await axios.get('https://fc.yahoo.com', {
+        headers: { 'User-Agent': UA },
+        validateStatus: () => true,
+        maxRedirects: 0,
+        timeout: 8000,
+      });
+      const setCookie = res.headers?.['set-cookie'] || [];
+      const cookie = setCookie.map(c => c.split(';')[0]).join('; ');
+      if (!cookie) throw new Error('no cookie from fc.yahoo.com');
+      const cr = await axios.get('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+        headers: { 'User-Agent': UA, Cookie: cookie },
+        timeout: 8000,
+      });
+      if (typeof cr.data !== 'string' || !cr.data || cr.data.includes('<')) throw new Error('bad crumb');
+      yahooCookie = cookie;
+      yahooCrumb = cr.data;
+      crumbExpiresAt = Date.now() + 30 * 60 * 1000; // crumbs are good for a while; refresh every 30 min
+    } finally {
+      crumbInFlight = null;
+    }
+  })();
+  return crumbInFlight;
+}
+
 async function getQuoteSummary(symbol) {
   const sym = normalizeSymbol(symbol);
   const key = `summary:${sym}`;
   const cached = cache.get(key);
   if (cached) return cached;
-  const modules = ['price', 'summaryDetail', 'defaultKeyStatistics', 'financialData'];
-  try {
-    const res = await yahooFinance.quoteSummary(sym, { modules });
-    cache.set(key, res, 3600); // 1 hour — fundamentals don't change intraday
-    return res;
-  } catch (e) {
-    // Retry once on rate limit
-    if (e.message.includes('Too Many Requests') || e.message.includes('429')) {
-      await new Promise(r => setTimeout(r, 2000));
-      try {
-        const res = await yahooFinance.quoteSummary(sym, { modules });
-        cache.set(key, res, 3600);
-        return res;
-      } catch { /* fall through */ }
+  const modules = 'price,summaryDetail,defaultKeyStatistics,financialData';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await getYahooAuth();
+      const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(sym)}?modules=${modules}&crumb=${encodeURIComponent(yahooCrumb)}`;
+      const res = await axios.get(url, {
+        headers: { 'User-Agent': UA, Cookie: yahooCookie },
+        timeout: 10000,
+      });
+      const out = res.data?.quoteSummary?.result?.[0];
+      if (!out) return null;
+      cache.set(key, out, 3600); // 1 hour — fundamentals don't change intraday
+      return out;
+    } catch (e) {
+      const status = e.response?.status;
+      if (status === 401 || status === 403) {
+        // crumb invalidated — drop auth and retry once with fresh handshake
+        yahooCookie = null; yahooCrumb = null; crumbExpiresAt = 0;
+        continue;
+      }
+      if (status === 429 && attempt === 0) {
+        await sleep(2000);
+        continue;
+      }
+      console.warn(`quoteSummary fail ${sym}: ${status || e.message}`);
+      return null; // caller decides fallback
     }
-    return null; // caller decides fallback
   }
+  return null;
 }
 
 async function search(symbol) {
