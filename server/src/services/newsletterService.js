@@ -234,18 +234,17 @@ export async function sendPortfolioTo(email){
   const clean = String(email||'').trim().toLowerCase()
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) throw new Error('Invalid email')
   console.log(`📧 Send-portfolio on demand to ${clean}...`)
-  let picks = await aiPicksService.getAIPicks().catch(async ()=>{
-    await new Promise(r=>setTimeout(r, 3000))
-    return aiPicksService.getAIPicks()
-  })
-  if(!picks.steady?.length){
-    console.log('📧 Picks not ready — waiting...')
-    for(let i=0;i<20;i++){
+  // Use cached picks if available — don't wait long
+  let picks = await aiPicksService.getAIPicks().catch(()=>null)
+  if(!picks?.steady?.length){
+    console.log('📧 Picks not ready — waiting up to 30s...')
+    for(let i=0;i<10;i++){
       await new Promise(r=>setTimeout(r, 3000))
-      const fresh = await aiPicksService.getAIPicks().catch(()=>null)
-      if(fresh?.steady?.length){ picks = fresh; break }
+      picks = await aiPicksService.getAIPicks().catch(()=>null)
+      if(picks?.steady?.length) break
     }
   }
+  console.log(`📧 Picks: ${picks?.steady?.length||0}+${picks?.mid?.length||0}+${picks?.aggressive?.length||0} (${picks?.scanned||0} scanned)`)
   let indices=[]
   let movers={gainers:[], losers:[]}
   let marketSummary=''
@@ -259,22 +258,27 @@ export async function sendPortfolioTo(email){
     const sensex = indices.find(i=>i.name?.includes('SENSEX'))
     const adv = sorted.filter(q=>(q.regularMarketChangePercent||0)>0).length
     const dec = sorted.filter(q=>(q.regularMarketChangePercent||0)<0).length
-    marketSummary = `${nifty ? `NIFTY 50 ${nifty.price?.toFixed(2)} (${nifty.changePercent?.toFixed(2)}%)` : ''} ${sensex ? `• SENSEX ${sensex.price?.toFixed(2)} (${sensex.changePercent?.toFixed(2)}%)` : ''} • Breadth: ${adv} gainers vs ${dec} losers. AI scanned ${picks.scanned} stocks.`
+    marketSummary = `${nifty ? `NIFTY 50 ${nifty.price?.toFixed(2)} (${nifty.changePercent?.toFixed(2)}%)` : ''} ${sensex ? `• SENSEX ${sensex.price?.toFixed(2)} (${sensex.changePercent?.toFixed(2)}%)` : ''} • Breadth: ${adv} gainers vs ${dec} losers. AI scanned ${picks?.scanned||0} stocks.`
   }catch(e){ console.log('📧 movers/indices fail', e.message) }
-  const html = portfolioHtml(picks, indices, movers, marketSummary)
+  const html = portfolioHtml(picks || {steady:[],mid:[],aggressive:[],scanned:0}, indices, movers, marketSummary)
   const transporter = createTransport()
   if(!transporter){
     console.log(`📧 [MOCK] Would send portfolio to ${clean}, html ${html.length}`)
     return { ok:true, mock:true, to: clean }
   }
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
-    to: clean,
-    subject: `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`,
-    html
-  })
-  console.log(`📧 Portfolio sent to ${clean}`)
-  return { ok:true, to: clean }
+  try{
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: clean,
+      subject: `Your AI Portfolio — Top 30 Picks ${new Date().toLocaleDateString('en-IN')} • 2,000 scanned`,
+      html
+    })
+    console.log(`📧 Portfolio sent to ${clean}`)
+    return { ok:true, to: clean }
+  }catch(e){
+    console.error(`📧 Portfolio send FAILED to ${clean}:`, e.message, e.code || '')
+    throw e
+  }
 }
 
 export default { addEmail, removeEmail, getEmails, getCount, sendDailyPortfolio, scheduleDailyAt7PM, sendPortfolioTo }

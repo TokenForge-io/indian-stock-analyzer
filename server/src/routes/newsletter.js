@@ -1,5 +1,6 @@
 import express from 'express'
 import { addEmail, removeEmail, getCount, sendDailyPortfolio, sendPortfolioTo } from '../services/newsletterService.js'
+import nodemailer from 'nodemailer'
 
 const router = express.Router()
 
@@ -40,8 +41,48 @@ router.post('/send-portfolio', async (req,res)=>{
     const clean = String(email).trim().toLowerCase()
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) return res.status(400).json({error:'Invalid email'})
     res.json({ ok:true, to: clean, background:true })
-    sendPortfolioTo(clean).catch(e=>console.error('📧 background send failed:', e.message))
+    sendPortfolioTo(clean).then(r=>console.log('📧 background send result:', JSON.stringify(r))).catch(e=>console.error('📧 background send FAILED:', e.message, e.code || ''))
   }catch(e){ res.status(400).json({error:e.message}) }
+})
+
+// Diagnostic: test SMTP connectivity directly
+router.get('/test-smtp', async (req,res)=>{
+  const host = process.env.SMTP_HOST
+  const user = process.env.SMTP_USER
+  const pass = process.env.SMTP_PASS
+  const port = Number(process.env.SMTP_PORT || 587)
+  if(!host || !user || !pass){
+    return res.json({ ok:false, error:'SMTP env vars not set', has:{host:!!host, user:!!user, pass:!!pass} })
+  }
+  try{
+    const t = nodemailer.createTransport({ host, port, secure: process.env.SMTP_SECURE==='true', auth:{user, pass}, connectionTimeout: 10000, greetingTimeout: 10000 })
+    await t.verify()
+    res.json({ ok:true, host, port, user, message:'SMTP connection verified' })
+  }catch(e){
+    res.json({ ok:false, host, port, user, error:e.message, code:e.code })
+  }
+})
+
+// Diagnostic: send a quick test email (no portfolio, just "test" text)
+router.post('/test-email', async (req,res)=>{
+  const to = req.body?.email || 'sartist100@gmail.com'
+  const host = process.env.SMTP_HOST
+  const user = process.env.SMTP_USER
+  const pass = process.env.SMTP_PASS
+  if(!host || !user || !pass) return res.json({ ok:false, error:'SMTP env vars not set' })
+  try{
+    const t = nodemailer.createTransport({ host, port: Number(process.env.SMTP_PORT||587), secure: process.env.SMTP_SECURE==='true', auth:{user, pass}, connectionTimeout: 10000 })
+    await t.verify()
+    const info = await t.sendMail({
+      from: process.env.SMTP_FROM || user,
+      to,
+      subject: 'SMTP Test — Indian Stock Analyzer',
+      html: '<h2>SMTP works!</h2><p>If you received this email, email sending is working on the server.</p>'
+    })
+    res.json({ ok:true, to, messageId: info.messageId })
+  }catch(e){
+    res.json({ ok:false, error:e.message, code:e.code })
+  }
 })
 
 export default router
