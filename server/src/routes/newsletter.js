@@ -45,22 +45,25 @@ router.post('/send-portfolio', async (req,res)=>{
   }catch(e){ res.status(400).json({error:e.message}) }
 })
 
-// Diagnostic: test SMTP connectivity directly
+// Diagnostic: test SMTP connectivity on both ports
 router.get('/test-smtp', async (req,res)=>{
   const host = process.env.SMTP_HOST
   const user = process.env.SMTP_USER
   const pass = process.env.SMTP_PASS
-  const port = Number(process.env.SMTP_PORT || 587)
   if(!host || !user || !pass){
     return res.json({ ok:false, error:'SMTP env vars not set', has:{host:!!host, user:!!user, pass:!!pass} })
   }
-  try{
-    const t = nodemailer.createTransport({ host, port, secure: process.env.SMTP_SECURE==='true', auth:{user, pass}, connectionTimeout: 10000, greetingTimeout: 10000 })
-    await t.verify()
-    res.json({ ok:true, host, port, user, message:'SMTP connection verified' })
-  }catch(e){
-    res.json({ ok:false, host, port, user, error:e.message, code:e.code })
+  const results = {}
+  for(const port of [465, 587]){
+    try{
+      const t = nodemailer.createTransport({ host, port, secure: port===465, auth:{user, pass}, connectionTimeout: 10000, greetingTimeout: 10000 })
+      await t.verify()
+      results[port] = 'WORKS'
+    }catch(e){
+      results[port] = `FAIL: ${e.message} (${e.code||''})`
+    }
   }
+  res.json({ ok:Object.values(results).some(v=>v==='WORKS'), host, user, results })
 })
 
 // Diagnostic: send a quick test email (no portfolio, just "test" text)

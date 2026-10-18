@@ -56,11 +56,16 @@ function createTransport(){
     console.log('📧 SMTP not configured — emails will be logged to console (set SMTP_HOST/USER/PASS to send real emails)')
     return null
   }
+  // Try port 465 SSL first (port 587 often blocked from cloud IPs), fallback to env port
+  const port = Number(process.env.SMTP_PORT || 465)
+  const secure = port === 465 || process.env.SMTP_SECURE === 'true'
   return nodemailer.createTransport({
     host,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: { user, pass }
+    port,
+    secure,
+    auth: { user, pass },
+    connectionTimeout: 15000,
+    greetingTimeout: 10000
   })
 }
 
