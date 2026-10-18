@@ -95,21 +95,21 @@ async function sendViaEmailJS({ to, subject, html }){
   const publicKey = process.env.EMAILJS_PUBLIC_KEY
   const privateKey = process.env.EMAILJS_PRIVATE_KEY
   if(!serviceId || !templateId || !publicKey) return null
-  const headers = { 'Content-Type': 'application/json' }
-  if(privateKey) headers['Authorization'] = `Bearer ${privateKey}`
+  const payload = {
+    service_id: serviceId,
+    template_id: templateId,
+    user_id: publicKey,
+    template_params: {
+      to_email: to,
+      subject,
+      html_content: html
+    }
+  }
+  if(privateKey) payload.accessToken = privateKey
   const r = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
     method: 'POST',
-    headers,
-    body: JSON.stringify({
-      service_id: serviceId,
-      template_id: templateId,
-      user_id: publicKey,
-      template_params: {
-        to_email: to,
-        subject,
-        html_content: html
-      }
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
   })
   if(!r.ok){
     const err = await r.text().catch(()=>r.statusText)
