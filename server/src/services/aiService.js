@@ -5,6 +5,7 @@ import newsService from './newsService.js';
 import targetService from './targetService.js';
 import NodeCache from 'node-cache';
 import { rsi, sma, macd } from '../utils/indicators.js';
+import { FALLBACK } from '../data/fallbackFundamentals.js';
 
 const cache = new NodeCache({ stdTTL: 600 });
 
@@ -42,7 +43,7 @@ export async function getAIAnalysis(symbol){
     newsService.getNews(sym).catch(()=>[]),
     targetService.getTargetPrice(sym).catch(()=>null)
   ]);
-  // If screener blocked (Render cloud IP), use Yahoo live fundamentals
+  // If screener blocked (Render cloud IP) or no P/E, try Yahoo live fundamentals
   if(fund?._blocked || !fund?.pe){
     const s = await yahooService.getQuoteSummary(sym).catch(()=>null);
     if(s?.summaryDetail?.trailingPE){
@@ -58,7 +59,9 @@ export async function getAIAnalysis(symbol){
         source: 'Yahoo Finance'
       };
     } else {
-      fund = null;
+      // Yahoo 429/blocked — fall back to static NIFTY 50 fundamentals
+      const fb = FALLBACK[sym];
+      fund = fb ? { ...fb, source: 'Static data (Yahoo rate-limited)' } : null;
     }
   }
 
@@ -106,7 +109,7 @@ export async function getAIAnalysis(symbol){
   if(lastMacd > lastSignal){ techScore+=10; pros.push(`MACD bullish crossover`); }
   else { techScore+=4; cons.push(`MACD bearish`); }
 
-  // Fundamental 30
+  // Fundamental 30 — 0/unknown values skipped (no misleading "Weak ROE 0%")
   if(pe>0 && pe < 18){ fundScore+=10; pros.push(`Attractive P/E ${pe}`); }
   else if(pe>=18 && pe<28){ fundScore+=7; pros.push(`Reasonable P/E ${pe}`); }
   else if(pe>=28 && pe<40){ fundScore+=5; cons.push(`High P/E ${pe} — expensive`); }
@@ -116,11 +119,13 @@ export async function getAIAnalysis(symbol){
   if(roe > 18){ fundScore+=10; pros.push(`Excellent ROE ${roe}%`); }
   else if(roe>10){ fundScore+=7; pros.push(`Good ROE ${roe}%`); }
   else if(roe>5){ fundScore+=4; cons.push(`Low ROE ${roe}%`); }
-  else { fundScore+=2; cons.push(`Weak ROE ${roe}%`); }
+  else if(roe>0){ fundScore+=2; cons.push(`Weak ROE ${roe}%`); }
+  else { fundScore+=5; }
 
   if(roce > 15){ fundScore+=10; pros.push(`High ROCE ${roce}% — efficient capital`); }
   else if(roce>8){ fundScore+=6; pros.push(`Decent ROCE ${roce}%`); }
-  else { fundScore+=3; cons.push(`Low ROCE ${roce}%`); }
+  else if(roce>0){ fundScore+=3; cons.push(`Low ROCE ${roce}%`); }
+  else { fundScore+=3; }
 
   // Momentum 20
   if(ret1m > 4){ momScore+=10; pros.push(`Strong 1M momentum +${ret1m.toFixed(1)}%`); }
@@ -164,7 +169,8 @@ export async function getAIAnalysis(symbol){
   if(uniqPros.length<2) uniqPros.push('Diversified business model');
   if(uniqCons.length<2) uniqCons.push(`Volatility ${volatility.toFixed(1)}% — price swings`);
 
-  const summary = `${sym} trades at ₹${price.toFixed(2)} (${((price-prevClose)/prevClose*100).toFixed(2)}% today). Past 1M ${ret1m.toFixed(1)}%, 1Y ${ret1y.toFixed(1)}% shows ${ret1y>0?'uptrend':'downtrend'}. Currently ${price > sma50 ? 'above' : 'below'} SMA50, RSI ${lastRsi.toFixed(1)} indicates ${lastRsi>70?'overbought':lastRsi<30?'oversold':'neutral'} momentum. Fundamentals: P/E ${pe || '-'}, ROE ${roe}%, ROCE ${roce}% — ${pe<20?'attractive valuation':pe<30?'fair valuation':'premium valuation'}. Consensus target ₹${target?.consensus?.target || '-'} (${upside>0?'+':''}${upside.toFixed(1)}% upside) suggests ${upside>0?'upside':'downside'} over 12M. ${sentimentScore(news.slice(0,3).map(n=>n.title))>0 ? 'Recent news is constructive.' : 'Recent news is cautious.'} ${newsAlignment}.`;
+  const fundText = (pe>0 || roe>0) ? `Fundamentals: P/E ${pe || '-'}, ROE ${roe || '-'}%, ROCE ${roce || '-'}% — ${!pe?'valuation data limited':pe<20?'attractive valuation':pe<30?'fair valuation':'premium valuation'}. ` : '';
+  const summary = `${sym} trades at ₹${price.toFixed(2)} (${((price-prevClose)/prevClose*100).toFixed(2)}% today). Past 1M ${ret1m.toFixed(1)}%, 1Y ${ret1y.toFixed(1)}% shows ${ret1y>0?'uptrend':'downtrend'}. Currently ${price > sma50 ? 'above' : 'below'} SMA50, RSI ${lastRsi.toFixed(1)} indicates ${lastRsi>70?'overbought':lastRsi<30?'oversold':'neutral'} momentum. ${fundText}Consensus target ₹${target?.consensus?.target || '-'} (${upside>0?'+':''}${upside.toFixed(1)}% upside) suggests ${upside>0?'upside':'downside'} over 12M. ${sentimentScore(news.slice(0,3).map(n=>n.title))>0 ? 'Recent news is constructive.' : 'Recent news is cautious.'} ${newsAlignment}.`;
 
   const result = {
     symbol: sym,
