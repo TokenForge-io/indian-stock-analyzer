@@ -361,14 +361,15 @@ export function scheduleDailyAt7PM(){
   if(scheduleDailyAt7PM.scheduler) clearTimeout(scheduleDailyAt7PM.scheduler)
   scheduleDailyAt7PM.scheduler = setTimeout(run, ms)
 
-  // Post-market deep scan at 15:35 IST (30 min after close 15:30) — pre-warms full 2,000 with proper reasoning so 19:00 email is instant and not 0 stocks
+  // Post-market full scan at 16:00 IST (30 min after close 15:30) — the daily picks refresh.
+  // Redundant with the external scheduler ping, but keeps working if that service is down.
   try{
-    cron.schedule('35 15 * * 1-5', async () => {
-      console.log('📧 Post-market deep scan 15:35 IST — scanning 2,000 with proper reasoning (Tech+Fund+Mom+News+Target)...')
-      try{ await aiPicksService.startFullScan() }catch(e){ console.error('📧 post-market scan error', e.message)}
+    cron.schedule('0 16 * * 1-5', async () => {
+      console.log('📊 Daily picks scan 16:00 IST — scanning 2,000 with proper reasoning (Tech+Fund+Mom+News+Target)...')
+      try{ aiPicksService.ensureDailyScan() }catch(e){ console.error('📊 daily picks scan error', e.message)}
     }, { timezone: 'Asia/Kolkata' })
-    console.log('📧 Post-market scan scheduled daily at 15:35 IST (30 min after close)')
-  }catch(e){ console.log('📧 cron schedule failed', e.message) }
+    console.log('📊 Daily picks scan scheduled at 16:00 IST (Mon-Fri, 30 min after market close)')
+  }catch(e){ console.log('📊 cron schedule failed', e.message) }
 }
 
 export async function sendPortfolioTo(email){

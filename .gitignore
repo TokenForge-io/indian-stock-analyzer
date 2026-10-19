@@ -10,3 +10,4 @@ server/output.log
 Thumbs.db
 
 server/src/data/newsletter.json
+server/src/data/picks.json

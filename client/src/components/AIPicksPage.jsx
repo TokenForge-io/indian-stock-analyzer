@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
 
 function PickCard({ s, onSelect }){
@@ -67,11 +67,29 @@ export default function AIPicksPage({ onSelect, onBack }){
   const [msg, setMsg] = useState('')
   useEffect(()=>{
     axios.get('/api/stocks/ai-picks').then(r=>setData(r.data)).catch(()=>{}).finally(()=>setLoading(false))
+    axios.get('/api/stocks/ai-picks/progress').then(r=>setProgress(r.data)).catch(()=>{})
+  },[])
+
+  // Scans are triggered by the server clock (daily 16:00 IST), never by page visits —
+  // so poll fast only while a scan is actually running, otherwise check rarely.
+  const scanning = progress ? !!progress.isScanning : true
+  useEffect(()=>{
     const id = setInterval(()=>{
       axios.get('/api/stocks/ai-picks/progress').then(r=>setProgress(r.data)).catch(()=>{})
-    }, 3000)
+    }, scanning ? 3000 : 60000)
     return ()=>clearInterval(id)
-  },[])
+  },[scanning])
+
+  // Pick up fresh results the moment a running scan finishes
+  const wasScanning = useRef(true)
+  useEffect(()=>{
+    if(!progress) return
+    if(wasScanning.current && !progress.isScanning){
+      axios.get('/api/stocks/ai-picks').then(r=>setData(r.data)).catch(()=>{})
+    }
+    wasScanning.current = !!progress.isScanning
+  },[progress])
+
   useEffect(()=>{
     // Refetch picks while scan incomplete — independent of progress polling so timer isn't cleared
     if(!data || data.fullMarket) return
@@ -135,9 +153,9 @@ export default function AIPicksPage({ onSelect, onBack }){
             <p className="text-xs text-gray-500 mt-1">Full 2,000 scan runs in background — you see Top 55 picks now, auto-updates to 2,000 when done (5-10 min). No refresh needed.</p>
           </div>
         )}
-        {!progress?.isScanning && data.fullMarket && <div className="bg-green-900/20 border border-green-800 rounded-xl p-2 text-sm text-green-400">✅ Full market scan complete — showing Top 30 from 2,000 NSE stocks</div>}
-        {!progress?.isScanning && !data.fullMarket && <div className="bg-yellow-900/20 border border-yellow-800 rounded-xl p-2 text-sm text-yellow-400">⚡ Showing Top 55 picks — full 2,000 scan starting in background...</div>}
-        <p className="text-sm text-gray-400">{data.disclaimer} • Updated {new Date(data.updatedAt).toLocaleString('en-IN')} • Click ⓘ for why • Scanned {data.scanned}/{data.totalScanned || data.scanned}</p>
+        {!progress?.isScanning && data.fullMarket && <div className="bg-green-900/20 border border-green-800 rounded-xl p-2 text-sm text-green-400">✅ Full market scan complete — Top 30 from 2,000 NSE stocks • Next refresh daily at 4:00 PM IST (after market close)</div>}
+        {!progress?.isScanning && !data.fullMarket && <div className="bg-gray-900 border border-gray-700 rounded-xl p-2 text-sm text-gray-400">⚡ Top 55 picks (quick scan) • Full 2,000 scan runs daily at 4:00 PM IST after market close</div>}
+        <p className="text-sm text-gray-400">{data.disclaimer} • Updated {data.scanTimeIST ? `${data.scanTimeIST} IST` : new Date(data.updatedAt).toLocaleString('en-IN')} • Click ⓘ for why • Scanned {data.scanned}/{data.totalScanned || data.scanned}</p>
         {/* Send portfolio on email — same format as daily 7 PM */}
         <div className="bg-gray-900 border border-blue-500/20 rounded-2xl p-4 flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
           <div>

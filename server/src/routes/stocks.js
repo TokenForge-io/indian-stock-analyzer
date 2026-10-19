@@ -244,6 +244,23 @@ router.get('/ai-picks/progress', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/stocks/ai-picks/refresh — daily post-close scan trigger.
+// Protected by AI_REFRESH_SECRET (return 403 if unset so it's never open).
+// Meant to be called by an external scheduler (cron-job.org) at 16:00 IST,
+// which also wakes Render's sleeping instance.
+router.get('/ai-picks/refresh', async (req, res) => {
+  try {
+    const secret = process.env.AI_REFRESH_SECRET;
+    if(!secret) return res.status(403).json({ error: 'AI_REFRESH_SECRET not configured' });
+    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || req.query.key;
+    if(token !== secret) return res.status(403).json({ error: 'Invalid key' });
+    // Default respects the daily schedule (scans only after 16:00 IST and only if stale);
+    // ?force=1 bypasses the freshness check for manual re-scans.
+    const r = aiPicksService.ensureDailyScan({ force: req.query.force === '1' });
+    res.json({ accepted: true, ...r, isScanning: aiPicksService.getScanProgress().isScanning });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/stocks/info/:symbol - company info + wikipedia
 router.get('/info/:symbol', async (req, res) => {
   try{

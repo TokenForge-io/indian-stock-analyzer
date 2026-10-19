@@ -1,12 +1,56 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import NodeCache from 'node-cache';
 import aiService from './aiService.js';
 import realtime from './realtimeService.js';
 import { NSE_UNIVERSE } from '../data/nseUniverse.js';
 
-const cache = new NodeCache({ stdTTL: 1800 });
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PICKS_FILE = path.join(__dirname, '../data/picks.json');
+
+const cache = new NodeCache({ stdTTL: 0 }); // no TTL — staleness is date-based (see isFresh)
 let scanProgress = { status: 'idle', scanned: 0, total: NSE_UNIVERSE.length, percent: 0, found: 0 };
 let fullScanCache = null;
 let isScanning = false;
+
+// --- Daily persistence: picks survive Render restarts/sleep -------------------
+function istNow(){
+  // Returns a Date shifted so its local get* methods read IST wall-clock time
+  const now = new Date();
+  return new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+}
+function istDate(){ const d = istNow(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0') }
+function istClockMinutes(){ const d = istNow(); return d.getHours()*60 + d.getMinutes() }
+
+function loadPicksFile(){
+  try{
+    if(!fs.existsSync(PICKS_FILE)) return null;
+    const parsed = JSON.parse(fs.readFileSync(PICKS_FILE, 'utf-8'));
+    return (parsed && Array.isArray(parsed.steady)) ? parsed : null;
+  }catch{ return null }
+}
+function savePicksFile(picks){
+  try{
+    const dir = path.dirname(PICKS_FILE);
+    if(!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PICKS_FILE, JSON.stringify(picks));
+    return true;
+  }catch(e){ console.warn('picks persist failed:', e.message); return false }
+}
+
+// Scan is "fresh" if we already scanned today (IST). Before 16:00 IST, yesterday's
+// picks are still the freshest thing we have — market hasn't closed yet.
+// Weekends never count as stale (NSE closed Sat/Sun).
+function isTradingDay(){ const d = istNow().getDay(); return d !== 0 && d !== 6 }
+function isFresh(record){
+  if(!isTradingDay()) return true;
+  if(!record || !record.scanDate) return false;
+  if(record.scanDate === istDate()) return true;
+  return istClockMinutes() < 16*60; // before 16:00 keep serving previous day's scan
+}
+
 
 const UNIVERSE_SMALL = [
   "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BHARTIARTL","ITC","LT","KOTAKBANK",
@@ -121,7 +165,7 @@ async function scanUniverseFast(symbols, label){
   return results;
 }
 
-async function buildPicksFromResults(results, scannedLabel){
+async function buildPicksFromResults(results, scannedLabel, scannedCount){
   results.sort((a,b)=> b.score - a.score);
   const steady = [], mid = [], aggressive = [];
   for(const s of results){
@@ -158,8 +202,11 @@ async function buildPicksFromResults(results, scannedLabel){
     mid: mid.slice(0,10).map(s=>({ symbol: s.symbol, score: s.score, verdict: s.verdict, price: s.present.price, target: s.forecast.target, upside: s.forecast.upside, pe: s.present.pe, roe: s.present.roe, rsi: s.past.rsi, pros: s.pros.slice(0,3), cons: s.cons.slice(0,2), summary: s.summary })),
     aggressive: aggressive.slice(0,10).map(s=>({ symbol: s.symbol, score: s.score, verdict: s.verdict, price: s.present.price, target: s.forecast.target, upside: s.forecast.upside, pe: s.present.pe, roe: s.present.roe, rsi: s.past.rsi, pros: s.pros.slice(0,3), cons: s.cons.slice(0,2), summary: s.summary })),
     updatedAt: new Date().toISOString(),
-    scanned: results.length,
-    totalScanned: NSE_UNIVERSE.length,
+    scanned: scannedCount ?? results.length,
+    picked: results.length,
+    totalScanned: scannedCount ?? NSE_UNIVERSE.length,
+    scanDate: istDate(),
+    scanTimeIST: istNow().toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }),
     fullMarket: scannedLabel.includes('2000'),
     disclaimer: scannedLabel.includes('2000') ? 'Top 30 AI picks — 10 per portfolio across NSE Full Market (2,000 scanned) • Scores out of 100 • Not SEBI advice' : 'Top 30 AI picks — 10 per portfolio across NSE Top 55 • Scores out of 100 • Full market scan in progress — will update to 2,000'
   };
@@ -169,27 +216,30 @@ let lastFullScanAttempt = 0;
 const FULL_SCAN_COOLDOWN_MS = 10 * 60 * 1000; // don't restart a failed scan more than once / 10 min
 
 export async function startFullScan(){
-  if(isScanning) return;
-  if(Date.now() - lastFullScanAttempt < FULL_SCAN_COOLDOWN_MS) return;
+  if(isScanning) return { ok: false, reason: 'already-scanning' };
+  if(Date.now() - lastFullScanAttempt < FULL_SCAN_COOLDOWN_MS) return { ok: false, reason: 'cooldown' };
   lastFullScanAttempt = Date.now();
   isScanning = true;
   scanProgress = { status: 'scanning full market', scanned: 0, total: NSE_UNIVERSE.length, percent: 0, found: 0 };
   console.log('Starting FULL MARKET scan of', NSE_UNIVERSE.length, 'stocks...');
   try{
     const results = await scanUniverse(NSE_UNIVERSE, 'FULL 2000');
-    const picks = await buildPicksFromResults(results, 'FULL 2000');
-    // Don't cache empty results (e.g. Yahoo 429 outage) — keep serving small scan
+    const picks = await buildPicksFromResults(results, 'FULL 2000', NSE_UNIVERSE.length);
+    // Don't cache empty results (e.g. Yahoo 429 outage) — keep serving previous day's picks
     if(picks.steady.length){
       fullScanCache = picks;
-      cache.set('ai-picks-full', picks, 6 * 3600); // 6h TTL — refresh daily via cron
+      cache.set('ai-picks-full', picks);            // no TTL — staleness handled by scanDate
+      savePicksFile(picks);                          // survive Render sleep/restart
     } else {
       console.warn('Full scan returned 0 picks — not caching (will retry after cooldown)');
     }
     scanProgress = { status: 'done', scanned: NSE_UNIVERSE.length, total: NSE_UNIVERSE.length, percent: 100, found: results.length };
-    console.log('FULL MARKET scan done:', picks.steady.length, picks.mid.length, picks.aggressive.length);
+    console.log('FULL MARKET scan done:', picks.steady.length, picks.mid.length, picks.aggressive.length, '-> persisted', picks.scanDate, picks.scanTimeIST);
+    return { ok: true, steady: picks.steady.length, mid: picks.mid.length, aggressive: picks.aggressive.length };
   }catch(e){
     console.error('Full scan failed', e.message);
     scanProgress.status = 'failed';
+    return { ok: false, error: e.message };
   }finally{
     isScanning = false;
   }
@@ -214,28 +264,48 @@ async function ensureSmallScan(){
   })().catch(e=>{ console.error('small scan fail', e.message); smallScanPromise=null; });
 }
 
-// Warm small scan in background 1 sec after start
-setTimeout(()=> ensureSmallScan().catch(()=>{}), 1000);
+// Warm small scan in background 1 sec after start — ONLY on first-ever boot (no picks.json yet)
+const persistedPicks = loadPicksFile();
+if(persistedPicks){
+  fullScanCache = persistedPicks;
+  cache.set('ai-picks-full', persistedPicks);
+  console.log(`AI Picks: loaded persisted scan from ${persistedPicks.scanDate} (${persistedPicks.scanTimeIST})`);
+} else {
+  setTimeout(()=> ensureSmallScan().catch(()=>{}), 1000);
+}
+
+// Daily scan trigger — runs at most once per day, after market close (16:00 IST).
+// Called by the 16:00 cron, the external /refresh ping, and as a cold-start catch-up.
+export function ensureDailyScan({ force = false } = {}){
+  if(isScanning) return { queued: false, reason: 'already-scanning' };
+  if(!force){
+    const record = fullScanCache || cache.get('ai-picks-full');
+    if(isFresh(record)) return { queued: false, reason: 'fresh' };
+    if(istClockMinutes() < 16*60) return { queued: false, reason: 'market-not-closed' };
+  }
+  startFullScan().catch(e => console.error('daily scan failed to start:', e.message));
+  return { queued: true };
+}
 
 export async function getAIPicks(){
-  // If full scan done, return it (cache has 6h TTL so it refreshes)
-  const fullCached = cache.get('ai-picks-full');
-  if(fullCached){
-    fullScanCache = fullCached;
-    return fullCached;
-  }
-  fullScanCache = null; // expired — fall back to small scan and re-trigger
-
-  const key = 'ai-picks-small';
-  const cached = cache.get(key);
-  if(cached){
-    if(!isScanning) startFullScan().catch(()=>{});
-    return { ...cached, progress: scanProgress, fullMarket: false };
+  // SERVE-ONLY: never scan because a visitor showed up.
+  // Scans are started exclusively by the 16:00 IST cron, the /refresh ping, or
+  // the after-close catch-up below (which still runs at most once per day).
+  const full = fullScanCache || cache.get('ai-picks-full');
+  if(full){
+    fullScanCache = full;
+    if(!isScanning) ensureDailyScan(); // no-op unless it's today after 16:00 with no scan yet
+    return { ...full, progress: scanProgress };
   }
 
-  // No cache yet - ensure scan started in background and return progress immediately (non-blocking)
+  // No full scan ever (first deploy) — warm the 55-stock scan and report progress
   ensureSmallScan().catch(()=>{});
-  // Return empty picks with progress so frontend doesn't block
+  const small = cache.get('ai-picks-small');
+  if(small){
+    // Top 55 ready but full scan not built yet — show them, populate full in background
+    if(!isScanning) ensureDailyScan({ force: true });
+    return { ...small, progress: scanProgress, fullMarket: false };
+  }
   return {
     steady: [], mid: [], aggressive: [],
     scanned: 0,
@@ -251,4 +321,4 @@ export function getScanProgress(){
   return { ...scanProgress, isScanning, hasFullCache: !!fullScanCache };
 }
 
-export default { getAIPicks, getScanProgress, startFullScan };
+export default { getAIPicks, getScanProgress, startFullScan, ensureDailyScan };
