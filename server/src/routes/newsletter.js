@@ -1,19 +1,45 @@
 import express from 'express'
-import { addEmail, removeEmail, getCount, sendDailyPortfolio, sendPortfolioTo } from '../services/newsletterService.js'
+import { addEmail, removeEmail, getCount, getMaxSubscribers, sendDailyPortfolio, sendPortfolioTo } from '../services/newsletterService.js'
+import emailBudget from '../services/emailBudget.js'
+import { subscribeLimits, sendPortfolioLimits, unsubscribeLimits } from '../middleware/rateLimit.js'
 import nodemailer from 'nodemailer'
 
 const router = express.Router()
 
-router.post('/subscribe', (req,res)=>{
+// Public email-request dedup: same address at most once per 24h (stops repeat spam to a victim)
+const recentSend = new Map()
+const DEDUP_MS = 24 * 60 * 60 * 1000
+function recentlySent(email){
+  // prune stale entries so the map can't grow unbounded
+  const now = Date.now()
+  for(const [k, t] of recentSend){ if(now - t > DEDUP_MS) recentSend.delete(k) }
+  const t = recentSend.get(email)
+  return !!t && (now - t < DEDUP_MS)
+}
+function markSent(email){ recentSend.set(email, Date.now()) }
+
+// Admin-only guard — Bearer header or ?key=. 403 when ADMIN_SECRET is unset so it is never open.
+function requireAdmin(req, res, next){
+  const secret = process.env.ADMIN_SECRET
+  if(!secret) return res.status(403).json({ error: 'ADMIN_SECRET not configured' })
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || req.query.key
+  if(token !== secret) return res.status(403).json({ error: 'Invalid admin key' })
+  next()
+}
+
+router.post('/subscribe', subscribeLimits, (req,res)=>{
   try{
     const email = req.body?.email || req.query.email
     if(!email) return res.status(400).json({error:'email required'})
     const r = addEmail(email)
-    res.json({ ok:true, email: String(email).toLowerCase(), already: r.already, count: r.count })
-  }catch(e){ res.status(400).json({error:e.message}) }
+    res.json({ ok:true, email: String(email).toLowerCase(), already: r.already, count: r.count, max: r.max })
+  }catch(e){
+    if(e.code === 'FULL') return res.status(403).json({ error: e.message, full: true, max: getMaxSubscribers() })
+    res.status(400).json({error:e.message})
+  }
 })
 
-router.post('/unsubscribe', (req,res)=>{
+router.post('/unsubscribe', unsubscribeLimits, (req,res)=>{
   try{
     const email = req.body?.email || req.query.email
     if(!email) return res.status(400).json({error:'email required'})
@@ -22,10 +48,10 @@ router.post('/unsubscribe', (req,res)=>{
   }catch(e){ res.status(400).json({error:e.message}) }
 })
 
-router.get('/count', (req,res)=> res.json({ count: getCount() }))
+router.get('/count', (req,res)=> res.json({ count: getCount(), max: getMaxSubscribers() }))
 
-// Admin trigger — POST /api/newsletter/send-now (for testing) — immediate send current picks
-router.post('/send-now', async (req,res)=>{
+// Admin trigger — POST /api/newsletter/send-now — immediate send of current picks (ADMIN_SECRET)
+router.post('/send-now', requireAdmin, async (req,res)=>{
   try{
     const r = await sendDailyPortfolio({ immediate: true })
     res.json({ ok:true, ...r })
@@ -33,14 +59,17 @@ router.post('/send-now', async (req,res)=>{
 })
 
 // On-demand single send — POST /api/newsletter/send-portfolio {email}
-// Fire-and-forget: respond immediately, send email in background (takes 30-60s on Render)
-// Add ?sync=1 to wait for the result (diagnostic)
-router.post('/send-portfolio', async (req,res)=>{
+// Rate-limited, deduped per address, and counted against the monthly email budget.
+router.post('/send-portfolio', sendPortfolioLimits, async (req,res)=>{
   try{
     const email = req.body?.email || req.query.email
     if(!email) return res.status(400).json({error:'email required'})
     const clean = String(email).trim().toLowerCase()
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) return res.status(400).json({error:'Invalid email'})
+    if(recentlySent(clean)) return res.status(429).json({ error: `Already sent to ${clean} in the last 24 hours.` })
+    if(!emailBudget.canSend()) return res.status(429).json({ error: 'Email limit reached for this month. Please try again next month.' })
+
+    markSent(clean)
     if(req.query.sync === '1'){
       const r = await sendPortfolioTo(clean)
       return res.json({ ok:true, ...r, sync:true })
@@ -50,8 +79,8 @@ router.post('/send-portfolio', async (req,res)=>{
   }catch(e){ res.status(400).json({error:e.message}) }
 })
 
-// Diagnostic: test SMTP connectivity on both ports
-router.get('/test-smtp', async (req,res)=>{
+// Diagnostic: test SMTP connectivity on both ports (ADMIN_SECRET)
+router.get('/test-smtp', requireAdmin, async (req,res)=>{
   const host = process.env.SMTP_HOST
   const user = process.env.SMTP_USER
   const pass = process.env.SMTP_PASS
@@ -75,8 +104,8 @@ router.get('/test-smtp', async (req,res)=>{
   res.json({ ok:Object.values(results).some(v=>v==='WORKS'), results, emailjs, resend })
 })
 
-// Diagnostic: send a quick test email (explicit recipient required — no default)
-router.post('/test-email', async (req,res)=>{
+// Diagnostic: send a quick test email (ADMIN_SECRET; explicit recipient required)
+router.post('/test-email', requireAdmin, async (req,res)=>{
   const to = req.body?.email
   if(!to) return res.status(400).json({ error:'email required' })
   const hasEmailJS = !!(process.env.EMAILJS_SERVICE_ID && process.env.EMAILJS_TEMPLATE_ID && process.env.EMAILJS_PUBLIC_KEY)

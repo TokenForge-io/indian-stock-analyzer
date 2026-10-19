@@ -11,3 +11,4 @@ Thumbs.db
 
 server/src/data/newsletter.json
 server/src/data/picks.json
+server/src/data/emailBudget.json

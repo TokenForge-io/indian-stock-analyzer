@@ -10,6 +10,7 @@ import stockRoutes from './routes/stocks.js';
 import newsletterRoutes from './routes/newsletter.js';
 import realtime from './services/realtimeService.js';
 import { scheduleDailyAt7PM } from './services/newsletterService.js';
+import { apiLimiter } from './middleware/rateLimit.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +20,9 @@ dotenv.config();
 const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 5000;
+
+// Behind Render's proxy — trust one hop so req.ip is the real client (needed for rate limits)
+app.set('trust proxy', 1);
 
 // Don't let one stray rejection kill the Render dyno
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e?.message || e));
@@ -53,6 +57,7 @@ const io = new Server(httpServer, {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use('/api', apiLimiter);
 
 // Serve React frontend if built locally (optional — on Render frontend lives on Vercel)
 const clientDist = path.join(__dirname, '../../client/dist');

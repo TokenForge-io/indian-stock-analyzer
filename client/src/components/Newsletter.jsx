@@ -46,7 +46,7 @@ export default function Newsletter({ compact=false }){
         <button onClick={subscribe} disabled={loading} className="px-6 py-2.5 bg-[#2962FF] hover:bg-[#1e4bd8] disabled:opacity-50 text-white rounded-[8px] font-bold text-sm whitespace-nowrap">Subscribe — Free</button>
       </div>
       {status && <p className={`font-mono text-xs mt-2 ${status.type==='success'?'text-[#089981]':'text-[#F23645]'}`}>{status.msg}</p>}
-      <p className="font-mono text-[10px] text-[#5d606b] mt-2">We never share your email • Unsubscribe anytime • Preview sent immediately on subscribe</p>
+      <p className="font-mono text-[10px] text-[#5d606b] mt-2">We never share your email • Unsubscribe anytime • Daily portfolio at 7:00 PM IST</p>
     </div>
   )
 }

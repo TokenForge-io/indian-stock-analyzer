@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
+import { downloadPortfolioPdf } from '../lib/portfolioPdf'
 
 function PickCard({ s, onSelect }){
   const [showInfo, setShowInfo] = useState(false)
@@ -64,7 +65,20 @@ export default function AIPicksPage({ onSelect, onBack }){
   const [progress, setProgress] = useState(null)
   const [email, setEmail] = useState('')
   const [sending, setSending] = useState(false)
+  const [pdfBusy, setPdfBusy] = useState(false)
   const [msg, setMsg] = useState('')
+
+  const onDownloadPdf = async ()=>{
+    if(!data) return
+    setPdfBusy(true); setMsg('')
+    try{
+      let indices = []
+      try{ const r = await axios.get('/api/indices', { timeout: 8000 }); indices = Array.isArray(r.data) ? r.data : [] }catch{}
+      await downloadPortfolioPdf(data, { indices })
+      setMsg('⬇️ PDF downloaded ✓')
+    }catch(e){ setMsg('Could not create PDF — please try again') }
+    setPdfBusy(false)
+  }
   useEffect(()=>{
     axios.get('/api/stocks/ai-picks').then(r=>setData(r.data)).catch(()=>{}).finally(()=>setLoading(false))
     axios.get('/api/stocks/ai-picks/progress').then(r=>setProgress(r.data)).catch(()=>{})
@@ -159,11 +173,14 @@ export default function AIPicksPage({ onSelect, onBack }){
         {/* Send portfolio on email — same format as daily 7 PM */}
         <div className="bg-gray-900 border border-blue-500/20 rounded-2xl p-4 flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
           <div>
-            <p className="ai-premium text-sm font-bold text-white">📧 Send me portfolio on my email</p>
-            <p className="ai-body text-xs text-gray-400">Same format as daily 7 PM — Top 30 + Indices + Top Movers + per-stock Why/Pros/Cons</p>
+            <p className="ai-premium text-sm font-bold text-white">Get your portfolio</p>
+            <p className="ai-body text-xs text-gray-400">⬇ Download it instantly as a PDF, or email the same 7 PM format (Top 30 + Indices + Why/Pros/Cons). Email is rate-limited to prevent spam.</p>
           </div>
-          <div className="flex gap-2 w-full md:w-auto">
-            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@gmail.com" className="flex-1 md:w-64 bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500" />
+          <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+            <button disabled={pdfBusy || !data} onClick={onDownloadPdf} className="px-5 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 disabled:opacity-50 rounded-xl text-sm font-bold text-white whitespace-nowrap">
+              {pdfBusy ? 'Building PDF…' : '⬇ Download PDF'}
+            </button>
+            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@gmail.com" className="flex-1 md:w-56 bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500" />
             <button disabled={sending || !email} onClick={async()=>{
               setSending(true); setMsg('')
               try{
@@ -172,7 +189,7 @@ export default function AIPicksPage({ onSelect, onBack }){
               }catch(e){ setMsg(e.response?.data?.error || 'Failed to send') }
               setSending(false)
             }} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-bold text-white whitespace-nowrap">
-              {sending ? 'Sending...' : 'Send portfolio'}
+              {sending ? 'Sending...' : 'Email me'}
             </button>
           </div>
         </div>

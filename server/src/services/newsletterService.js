@@ -5,10 +5,15 @@ import nodemailer from 'nodemailer'
 import cron from 'node-cron'
 import aiPicksService from './aiPicksService.js'
 import realtime from './realtimeService.js'
+import emailBudget from './emailBudget.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const DATA_FILE = path.join(__dirname, '../data/newsletter.json')
+
+// Daily 7 PM send × N subscribers × ~30 days must fit under the 200/mo EmailJS plan.
+// Default 6 keeps the whole month within budget; override with MAX_SUBSCRIBERS.
+const MAX_SUBSCRIBERS = Number(process.env.MAX_SUBSCRIBERS || 6)
 
 function ensureFile(){
   try{
@@ -33,11 +38,17 @@ export function addEmail(email){
   const clean = String(email).trim().toLowerCase()
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) throw new Error('Invalid email')
   const list = loadEmails()
-  if(list.includes(clean)) return { already: true, count: list.length }
+  if(list.includes(clean)) return { already: true, count: list.length, max: MAX_SUBSCRIBERS }
+  if(list.length >= MAX_SUBSCRIBERS){
+    const err = new Error(`Newsletter is currently full (${MAX_SUBSCRIBERS} subscribers on the free plan). Please try again later.`)
+    err.code = 'FULL'
+    throw err
+  }
   list.push(clean)
   saveEmails(list)
-  return { already: false, count: list.length }
+  return { already: false, count: list.length, max: MAX_SUBSCRIBERS }
 }
+export function getMaxSubscribers(){ return MAX_SUBSCRIBERS }
 export function removeEmail(email){
   const clean = String(email).trim().toLowerCase()
   const list = loadEmails()
@@ -164,6 +175,14 @@ function portfolioHtmlCompact(picks, indices=[], movers={gainers:[], losers:[]},
 // Unified email sender — priority: EmailJS (any email) → Resend → SMTP (localhost)
 async function sendEmail({ to, subject, html, htmlCompact }){
   console.log(`📧 Email to ${to}: html=${html.length} chars (${(html.length/1024).toFixed(1)}KB)`)
+  // Hard monthly ceiling — protects the 200/mo quota no matter who triggers a send.
+  if(!emailBudget.canSend()){
+    const u = emailBudget.getUsage()
+    console.warn(`📧 Monthly email budget reached (${u.used}/${u.max}) — skipping send to ${to}`)
+    const err = new Error(`Monthly email limit reached (${u.used}/${u.max}). Please try again next month.`)
+    err.code = 'BUDGET'
+    throw err
+  }
   // EmailJS rejects >50KB — shrink to compact version when available
   const emailjsPayload = () => (html.length > 45000 && htmlCompact) ? htmlCompact : html
   // 1. EmailJS — works for ANY recipient, no domain verification (50KB limit)
@@ -174,6 +193,7 @@ async function sendEmail({ to, subject, html, htmlCompact }){
       if(payload.length !== html.length) console.log(`📧 HTML too large for EmailJS — using compact version (${payload.length} chars)`)
       await sendViaEmailJS({ to, subject, html: payload })
       console.log(`📧 EmailJS sent to ${to}`)
+      emailBudget.record()
       return { method: 'emailjs' }
     }catch(e){
       console.warn(`📧 EmailJS failed to ${to}: ${e.message} — trying next method...`)
@@ -186,6 +206,7 @@ async function sendEmail({ to, subject, html, htmlCompact }){
       const from = process.env.SMTP_FROM || process.env.SMTP_USER
       const r = await sendViaResend({ from, to, subject, html })
       console.log(`📧 Resend sent to ${to}:`, r?.id || 'ok')
+      emailBudget.record()
       return { method: 'resend', id: r?.id }
     }catch(e){
       console.warn(`📧 Resend failed to ${to}: ${e.message} — trying next method...`)
@@ -201,6 +222,7 @@ async function sendEmail({ to, subject, html, htmlCompact }){
     const from = process.env.SMTP_FROM || process.env.SMTP_USER
     await transporter.sendMail({ from, to, subject, html })
     console.log(`📧 SMTP sent to ${to}`)
+    emailBudget.record()
     return { method: 'smtp' }
   } catch(e){
     // SMTP failed (blocked from cloud) — API fallbacks already tried above; give a clear error
@@ -424,4 +446,4 @@ export async function sendPortfolioTo(email){
 }
 
 export { sendEmail }
-export default { addEmail, removeEmail, getEmails, getCount, sendDailyPortfolio, scheduleDailyAt7PM, sendPortfolioTo, sendEmail }
+export default { addEmail, removeEmail, getEmails, getCount, getMaxSubscribers, sendDailyPortfolio, scheduleDailyAt7PM, sendPortfolioTo, sendEmail }
