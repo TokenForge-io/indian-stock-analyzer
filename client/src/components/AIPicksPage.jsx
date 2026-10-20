@@ -214,14 +214,6 @@ export default function AIPicksPage({ onSelect, onBack }){
           </div>
         </section>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-          <h3 className="font-semibold mb-2">What to add here?</h3>
-          <p className="text-sm text-gray-400">Tell me what you want on this full page — e.g., detailed table with P/E, ROE, 1Y return, chart preview, filters, export, etc. I’ll build it.</p>
-          <div className="flex gap-2 mt-3">
-            <button onClick={onBack} className="px-4 py-2 bg-blue-600 rounded text-sm">Back to Analyzer</button>
-            <span className="text-xs text-gray-600 self-center">Full page — as you requested</span>
-          </div>
-        </div>
         <footer className="text-center py-6 border-t border-gray-800 mt-6">
           <p className="ai-premium text-sm font-bold tracking-tight">Made by <span className="text-blue-400">Saurabh</span> <span className="text-gray-600 font-normal">• Top AI Picks • 30 stocks</span></p>
           <p className="text-xs text-gray-600 mt-1">Not SEBI registered • For education only</p>
